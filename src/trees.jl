@@ -274,11 +274,8 @@ function find_cliques(L, snodes::Array{Int64,1}, snptr::Array{Int64,1}, supernod
 	jjj = 1
 
 	for iii = 1:Nc
-		if iii < Nc
-			vRep = snodes[snptr[iii]:snptr[iii + 1] - 1][1]
-		else
-			vRep = snodes[snptr[iii]:end][1]
-		end
+		vRep = snodes[snptr[iii]]
+
 		adjPlus = find_higher_order_neighbors(L, vRep)
 		deg = length(adjPlus) + 1
 		cliques = [cliques; vRep; adjPlus]
@@ -432,4 +429,153 @@ function svec_to_mat(ind::Int64)
 	return r::Int64, c::Int64
 end
 
+# -------------------------------------
+# Functions related to clique merging
+# -------------------------------------
 
+# compute the edge set of the initial clique graph, only consider parent-child and sibling-sibling relationships
+function initial_clique_graph(t)
+	n_cliques = length(t.par)
+	edges = spzeros(Float64, n_cliques, n_cliques)
+
+	# following a descending post-order, add edges
+	for i = 1:length(t.post)
+		clique_ind = t.post[i]
+		children = t.child[clique_ind]
+		n_children = length(children)
+		# add edge to each child (father: row, child: col) (Upper Triangle)
+		for (j, ch) in enumerate(children)
+			edges[clique_ind, ch] = edge_metric_parent(t.res, t.sep, clique_ind, ch)
+
+			# add edges between siblings combinations (Lower Triangle)
+			for sib in view(children,(j+1):n_children)
+				edges[ch, sib] = edge_metric_siblings(t.res, t.sep, ch, sib)
+			end
+		end
+	end
+	return edges
+end
+
+# computes the edge metric for cliques C_a and C_b: (C_a ∩ C_b) / (C_a ∪ C_b) where C_a is the parent of C_b
+function edge_metric_parent(res, sep, c_a, c_b)
+	return length(sep[c_b]) / (length(sep[c_a]) + length(res[c_a]) + length(res[c_b]))
+end
+
+# computes the edge metric for cliques C_a and C_b: (C_a ∩ C_b) / (C_a ∪ C_b) where C_a is the sibling of C_b
+function edge_metric_siblings(res, sep, c_a, c_b)
+	return intersect_dim(sep[c_a], sep[c_b]) / (length(res[c_a]) + length(res[c_b]) + union_dim(sep[c_a], sep[c_b]))
+end
+
+# Finds the size of the set A ∩ B under the assumption that B only has unique elements
+function intersect_dim(A::AbstractVector, B::AbstractVector)
+	dim = 0
+	for elem in B
+		in(elem, A) && (dim += 1)
+	end
+	return dim
+end
+
+# Finds the size of the set A ∪ B under the assumption that A and B only have unique elements
+function union_dim(A::AbstractVector, B::AbstractVector)
+	dim = length(A)
+	for elem in B
+		!in(elem, A) && (dim += 1)
+	end
+	return dim
+end
+
+function find_merge_candidates(edges)
+	~, ind = findmax(edges)
+	return ind
+end
+
+function merge_cliques!(t, edges, cand)
+	cand[1] < cand[2] ? merge_child!(t, edges, cand) : merge_sibling!(t, edges, cand)
+end
+
+# Merge two cliques that are in a parent (cand[1]) - child (cand[2]) relationship
+function merge_child!(t, edges, cand)
+	p = cand[1]
+	ch = cand[2]
+
+	# merge child's vertex sets into parent's vertex set
+	push!(t.res[p], t.res[ch]...)
+	t.res[ch] = [] #necessary or just leave it
+	t.sep[ch] = []
+
+	# update parent structure
+	@. t.par[t.child[ch]] = p
+	t.par[ch] = -1 #-1 instead of NaN, effectively remove that entry from the parent list
+
+	# update children structure
+	filter!(x -> x != ch, t.child[p])
+	push!(t.child[p], t.child[ch]...)
+	t.child[ch] = []
+
+	# remove edge value between parent and child
+	# edges[p, ch] = 0
+
+	# # remove all edge values to the child
+	# @. edges[ch, :] = 0
+	# @. edges[:, ch] = 0
+	return nothing
+end
+
+# Merge two cliques that are in a sibling relationship
+function merge_sibling!(t, edges, cand)
+	c1 = cand[1]
+	c2 = cand[2]
+	# merge vertex set of cand[2] into cand[1]
+	push!(t.res[c1], t.res[c2])
+	t.res[c2] = []
+	t.sep[c1] = union(t.sep[c1], t.sep[c2])
+	t.sep[c2] = []
+
+	@. t.par[t.child[c2]] = c1
+	t.par[c2] = -1
+
+	# update children structure
+	push!(t.child[c1], t.child[c2]...)
+	t.child[c2] = []
+
+
+	return nothing
+end
+
+# After a merge operation update the affected edges
+function update!(t, edges, cand)
+	c1 = cand[1]
+	c2 = cand[2]
+
+	# remove edge value between c1 and c2 and all to c2
+	edges[c1, c2] = 0
+	@. edges[c2, :] = 0
+	@. edges[:, c2] = 0
+
+	# recalculate edge values of c1's children
+	for (j, ch) in enumerate(t.child[c1])
+		edges[c1, ch] = COSMO.edge_metric_parent(t.res, t.sep, c1, ch)
+	end
+
+	# edge to c1's parent
+	p = t.par[c1]
+	if p > 0
+		edges[p, c1] = COSMO.edge_metric_parent(t.res, t.sep, p, c1)
+	end
+
+	# edges to c1's siblings
+	siblings = t.child[p]
+	for sib in siblings
+		if sib != c1
+			# make sure it's stored in the lower triangle of matrix edges
+			if sib < c1
+				edges[c1, sib] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
+			else
+				edges[sib, c1] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
+			end
+		end
+	end
+
+end
+
+evaluate_merge_state(t) = true
