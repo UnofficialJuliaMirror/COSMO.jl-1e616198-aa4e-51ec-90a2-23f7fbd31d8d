@@ -136,30 +136,19 @@ function get_clique(sntree::SuperNodeTree, ind::Int64)
 end
 
 function print_cliques(sntree::SuperNodeTree)
-	N = length(sntree.chptr)
-	chptr = sntree.chptr
+	N = length(sntree.snd)
+
 	println("Cliques of Graph:")
 	for iii = 1:N
-		if iii != N
-			clique = sntree.cliques[chptr[iii]:chptr[iii + 1] - 1]
-		else
-			clique = sntree.cliques[chptr[iii]:end]
-		end
-		println("$(iii): $(clique)")
+		println("$(iii): res: $(sntree.snd[iii]), sep: $(sntree.sep[iii])")
 	end
 end
 
 function print_supernodes(sntree::SuperNodeTree)
-	N = length(sntree.snptr)
-	snptr = sntree.snptr
+	N = length(sntree.snd)
 	println("Supernodes of Graph:")
 	for iii = 1:N
-		if iii != N
-			sn = sntree.snd[snptr[iii]:snptr[iii + 1] - 1]
-		else
-			sn = sntree.snd[snptr[iii]:end]
-		end
-		println("$(iii): $(sn)")
+		println("$(iii): $(sntree.snd[iii])")
 	end
 end
 
@@ -225,10 +214,7 @@ function find_supernodes(par::Array{Int64,1}, child::Array{Array{Int64,1}}, post
 	N = length(par)
 	# number of representative vertices == number of supernodes
 	Nrep = length(supernode_par)
-
-	# snode = zeros(Int64, N)
-	snode = [Array{Int64}(undef, 0) for i = 1:N]
-	# snptr = zeros(Int64,Nrep)
+	snode = [Array{Int64}(undef, 0) for i = 1:Nrep]
 
 	for iii in post
 		f = snInd[iii]
@@ -239,18 +225,6 @@ function find_supernodes(par::Array{Int64,1}, child::Array{Array{Int64,1}}, post
 			push!(snode[f], iii)
 		end
 	end
-
-	# kkk = 1
-	# jjj = 1
-	# for (iii, list) in enumerate(snode_list)
-	# 	len = length(list)
-	# 	if len > 0
-	# 		snptr[jjj] = kkk
-	# 		snode[kkk:kkk + len - 1] = list
-	# 		kkk += len
-	# 		jjj += 1
-	# 	end
-	# end
 	return snode, supernode_par
 
 end
@@ -271,7 +245,7 @@ function find_separators(L, snodes::Array{Array{Int64,1},1}, supernode_par::Arra
 		sep[iii] = adjPlus
 		setdiff!(sep[iii], snodes[iii])
 
-		nBlk[iii] = Base.power_by_squaring(length(adjPlus) + 1, 2)
+		nBlk[iii] = Base.power_by_squaring(length(sep[iii]) + length(snodes[iii]), 2)
 	end
 
 	return sep, nBlk
