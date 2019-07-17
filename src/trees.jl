@@ -1,13 +1,11 @@
 
 mutable struct SuperNodeTree
-	snd::Array{Int64,1} #vertices of supernodes stored in one array
-	snptr::Array{Int64,1} # vertices of supernode i are stored in snd[snptr[i]:snptr[i+1]-1]
+	snd::Array{Array{Int64,1},1} #vertices of supernodes stored in one array (also called residuals)
 	snd_par::Array{Int64,1}  # parent of supernode k is supernode j=snd_par[k]
 	snd_post::Array{Int64,1} # post order of supernodal elimination tree
 	post::Array{Int64} # post ordering of the vertices in elim tree σ(j) = v
 	par::Array{Int64}
-	cliques::Array{Int64,1} #vertices of cliques stored in one array
-	chptr::Array{Int64,1} #points to the indizes where new clique starts in cliques array
+	sep::Array{Array{Int64,1},1} #vertices of clique seperators
 	nBlk::Array{Int64,1} #sizes of submatrizes defined by each clique
 	function SuperNodeTree(L)
 		par = etree(L)
@@ -18,17 +16,16 @@ mutable struct SuperNodeTree
 		sort_children!(child, post)
 		# faster algorithm according to Vandenberghe p.308
 		degrees = higher_degrees(L)
-		snd, snptr, snd_par = find_supernodes(par, child, post, degrees)
+		snd, snd_par = find_supernodes(par, child, post, degrees)
 
-		# TODO: amalgamate supernodes
 		snd_child = child_from_par(snd_par)
 		# # a post-ordering of the elimination tree is needed to make sure that in the
 		# # psd completion step the matrix is completed from lower-right to top-left
-		 snd_post = post_order(snd_par, snd_child)
+	 	snd_post = post_order(snd_par, snd_child)
+	 	# given the supernodes (clique residuals) find the clique separators
+		sep, nBlk = find_separators(L, snd, snd_par, post)
 
-		cliques, chptr, nBlk = find_cliques(L, snd, snptr, snd_par, post)
-
-		new(snd, snptr, snd_par, snd_post, post, par, cliques, chptr, nBlk)
+		new(snd, snd_par, snd_post, post, par, sep, nBlk)
 	end
 
 end
@@ -51,7 +48,7 @@ function invert_order(sigma::Array{Int64,1})
 end
 
 function num_cliques(sntree::SuperNodeTree)
-	return length(sntree.chptr)
+	return length(sntree.snd_par)
 end
 
 # elimination tree algorithm from H.Liu - A Compact Row Storage Scheme for Cholesky Factors Using Elimination Trees
@@ -127,21 +124,15 @@ function child_from_par(par::Array{Int64,1})
 end
 
 function get_snd(sntree::SuperNodeTree, ind::Int64)
-	N = length(sntree.snptr)
-	if ind == N
-		return sntree.snd[sntree.snptr[ind]:end]
-	else
-		return sntree.snd[sntree.snptr[ind]:sntree.snptr[ind + 1] - 1]
-	end
+		return sntree.snd[ind]
+end
+
+function get_sep(sntree::SuperNodeTree, ind::Int64)
+		return sntree.sep[ind]
 end
 
 function get_clique(sntree::SuperNodeTree, ind::Int64)
-	N = length(sntree.chptr)
-	if ind == N
-		return sntree.cliques[sntree.chptr[ind]:end]
-	else
-		return sntree.cliques[sntree.chptr[ind]:sntree.chptr[ind + 1] - 1]
-	end
+	return union(sntree.snd[ind], sntree.sep[ind])
 end
 
 function print_cliques(sntree::SuperNodeTree)
@@ -235,56 +226,55 @@ function find_supernodes(par::Array{Int64,1}, child::Array{Array{Int64,1}}, post
 	# number of representative vertices == number of supernodes
 	Nrep = length(supernode_par)
 
-	snode = zeros(Int64, N)
-	snode_list = [Array{Int64}(undef, 0) for i = 1:N]
-	snptr = zeros(Int64,Nrep)
+	# snode = zeros(Int64, N)
+	snode = [Array{Int64}(undef, 0) for i = 1:N]
+	# snptr = zeros(Int64,Nrep)
 
 	for iii in post
 		f = snInd[iii]
 		if f < 0
-			push!(snode_list[iii], iii)
+			push!(snode[iii], iii)
 
 		else
-			push!(snode_list[f], iii)
+			push!(snode[f], iii)
 		end
 	end
 
-	kkk = 1
-	jjj = 1
-	for (iii, list) in enumerate(snode_list)
-		len = length(list)
-		if len > 0
-			snptr[jjj] = kkk
-			snode[kkk:kkk + len - 1] = list
-			kkk += len
-			jjj += 1
-		end
-	end
-	return snode, snptr, supernode_par
+	# kkk = 1
+	# jjj = 1
+	# for (iii, list) in enumerate(snode_list)
+	# 	len = length(list)
+	# 	if len > 0
+	# 		snptr[jjj] = kkk
+	# 		snode[kkk:kkk + len - 1] = list
+	# 		kkk += len
+	# 		jjj += 1
+	# 	end
+	# end
+	return snode, supernode_par
 
 end
 
-function find_cliques(L, snodes::Array{Int64,1}, snptr::Array{Int64,1}, supernode_par::Array{Int64,1}, post::Array{Int64,1})
+function find_separators(L, snodes::Array{Array{Int64,1},1}, supernode_par::Array{Int64,1}, post::Array{Int64,1})
 	postInv = invert_order(post)
 
 	Nc = length(supernode_par)
-	cliques = Array{Int64}(undef, 0)
+	sep = [Array{Int64}(undef, 0) for i = 1:Nc]
+
 	nBlk = zeros(Int64, Nc)
-	chptr = zeros(Int64, Nc)
-	jjj = 1
 
 	for iii = 1:Nc
-		vRep = snodes[snptr[iii]]
+		vRep = snodes[iii][1]
 
 		adjPlus = find_higher_order_neighbors(L, vRep)
 		deg = length(adjPlus) + 1
-		cliques = [cliques; vRep; adjPlus]
-		chptr[iii] = jjj
+		sep[iii] = adjPlus
+		setdiff!(sep[iii], snodes[iii])
+
 		nBlk[iii] = Base.power_by_squaring(length(adjPlus) + 1, 2)
-		jjj += deg
 	end
 
-	return cliques, chptr, nBlk
+	return sep, nBlk
 
 end
 
@@ -449,7 +439,7 @@ function initial_clique_graph(t)
 
 			# add edges between siblings combinations (Lower Triangle)
 			for sib in view(children,(j+1):n_children)
-				edges[ch, sib] = edge_metric_siblings(t.res, t.sep, ch, sib)
+				edges[sib, ch] = edge_metric_siblings(t.res, t.sep, ch, sib)
 			end
 		end
 	end
@@ -526,9 +516,9 @@ function merge_sibling!(t, edges, cand)
 	c1 = cand[1]
 	c2 = cand[2]
 	# merge vertex set of cand[2] into cand[1]
-	push!(t.res[c1], t.res[c2])
+	push!(t.res[c1], t.res[c2]...)
 	t.res[c2] = []
-	t.sep[c1] = union(t.sep[c1], t.sep[c2])
+	union!(t.sep[c1], t.sep[c2])
 	t.sep[c2] = []
 
 	@. t.par[t.child[c2]] = c1
@@ -557,25 +547,24 @@ function update!(t, edges, cand)
 		edges[c1, ch] = COSMO.edge_metric_parent(t.res, t.sep, c1, ch)
 	end
 
-	# edge to c1's parent
+	# edge to c1's parent (for all non-root nodes)
 	p = t.par[c1]
 	if p > 0
 		edges[p, c1] = COSMO.edge_metric_parent(t.res, t.sep, p, c1)
-	end
 
-	# edges to c1's siblings
-	siblings = t.child[p]
-	for sib in siblings
-		if sib != c1
-			# make sure it's stored in the lower triangle of matrix edges
-			if sib < c1
-				edges[c1, sib] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
-			else
-				edges[sib, c1] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
+		# edges to c1's siblings
+		siblings = t.child[p]
+		for sib in siblings
+			if sib != c1
+				# make sure it's stored in the lower triangle of matrix edges
+				if sib < c1
+					edges[c1, sib] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
+				else
+					edges[sib, c1] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
+				end
 			end
 		end
 	end
-
 end
 
 evaluate_merge_state(t) = true

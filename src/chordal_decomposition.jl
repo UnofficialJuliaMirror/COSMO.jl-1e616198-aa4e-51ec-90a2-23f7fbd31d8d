@@ -377,9 +377,9 @@ function psd_complete!(A::AbstractMatrix, N::Int64, sntree::SuperNodeTree, p::Ar
     # in order to obtain ν, α the vertex numbers of the supernode are mapped to the new position of the permuted matrix
     # index set of snd(i) sorted using the numerical ordering i,i+1,...i+ni
     ν = get_snd(sntree, snd_id)
-    clique = get_clique(sntree, snd_id)
+    #clique = get_clique(sntree, snd_id)
     # index set containing the elements of col(i) \ snd(i) sorted using numerical ordering σ(i)
-    α = filter(x -> !in(x, ν), clique)
+    α = get_sep(sntree, snd_id)
 
     # index set containing the row indizes of the lower-triangular zeros in column i (i: representative index) sorted by σ(i)
     i = ν[1]
