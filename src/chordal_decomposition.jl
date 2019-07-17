@@ -43,11 +43,7 @@ end
 
 function analyse_sparsity_pattern!(ci, csp, sets, C::PsdCone{T}, k, sp_ind) where {T <: Real}
   if length(csp) < C.dim
-    ordering = find_graph!(ci, csp, C.sqrt_dim, C)
-    ci.sp_arr[sp_ind] = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering)
-    push!(ci.psd_cones_ind, k)
-    ci.num_decomposable += 1
-    return sp_ind + 1
+    return _analyse_sparsity_pattern(ci, csp, C, k, sp_ind)
   else
    sets[k] = COSMO.DensePsdCone{T}(C.dim)
    return sp_ind
@@ -56,15 +52,19 @@ end
 
 function analyse_sparsity_pattern!(ci, csp, sets, C::PsdConeTriangle{T}, k, sp_ind) where {T <: Real}
   if length(csp) < C.dim
-    ordering = find_graph!(ci, csp, C.sqrt_dim, C)
-    ci.sp_arr[sp_ind] = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering)
-    push!(ci.psd_cones_ind, k)
-    ci.num_decomposable += 1
-    return sp_ind + 1
+    return _analyse_sparsity_pattern(ci, csp, C, k, sp_ind)
   else
    sets[k] = COSMO.DensePsdConeTriangle{T}(C.dim)
     return sp_ind
   end
+end
+
+function _analyse_sparsity_pattern(ci, csp, C::Union{PsdCone{<: Real}, PsdConeTriangle{<: Real}}, k, sp_ind) where {T <: Real}
+  ordering = find_graph!(ci, csp, C.sqrt_dim, C)
+  ci.sp_arr[sp_ind] = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering)
+  push!(ci.psd_cones_ind, k)
+  ci.num_decomposable += 1
+  return sp_ind + 1
 end
 
 analyse_sparsity_pattern!(ci, csp, sets, C::AbstractConvexSet, k, sp_ind) = sp_ind
