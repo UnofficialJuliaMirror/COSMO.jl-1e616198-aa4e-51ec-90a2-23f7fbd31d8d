@@ -18,8 +18,8 @@ end
 
 include("./algebra.jl")
 include("./projections.jl")
-include("./settings.jl")            # TODO: unmodified - revisit
 include("./trees.jl")
+include("./settings.jl")            # TODO: unmodified - revisit
 include("./types.jl")               # some types still need tidying
 include("./constraint.jl")          # TODO: unmodified - revisit
 include("./parameters.jl")          # TODO: unmodified - revisit

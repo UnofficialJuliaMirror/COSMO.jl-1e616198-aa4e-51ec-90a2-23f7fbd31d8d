@@ -176,13 +176,17 @@ mutable struct SparsityPattern
   reverse_ordering::Array{Int64}
 
   # constructor for sparsity pattern
-  function SparsityPattern(L, N::Int64, ordering)
+  function SparsityPattern(L, N::Int64, ordering, merge_strategy)
 
     reverse_ordering = zeros(length(ordering))
     for i = 1:N
       reverse_ordering[ordering[i]] = i
     end
     sntree = SuperNodeTree(L)
+
+    # clique merging
+    merge_cliques!(sntree, merge_strategy)
+
     return new(sntree, ordering, reverse_ordering)
   end
 end

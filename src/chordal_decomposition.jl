@@ -37,31 +37,31 @@ function find_sparsity_patterns!(ws)
   for (k, C) in enumerate(ws.p.C.sets)
     psd_row_range = row_ranges[k]
     csp = find_aggregate_sparsity(ws.p.A, ws.p.b, psd_row_range, C)
-    sp_ind = analyse_sparsity_pattern!(ws.ci, csp, ws.p.C.sets, C, k, sp_ind)
+    sp_ind = analyse_sparsity_pattern!(ws.ci, csp, ws.p.C.sets, C, k, sp_ind, ws.settings.merge_strategy)
   end
 end
 
-function analyse_sparsity_pattern!(ci, csp, sets, C::PsdCone{T}, k, sp_ind) where {T <: Real}
+function analyse_sparsity_pattern!(ci, csp, sets, C::PsdCone{T}, k, sp_ind, merge_strategy) where {T <: Real}
   if length(csp) < C.dim
-    return _analyse_sparsity_pattern(ci, csp, C, k, sp_ind)
+    return _analyse_sparsity_pattern(ci, csp, C, k, sp_ind, merge_strategy)
   else
    sets[k] = COSMO.DensePsdCone{T}(C.dim)
    return sp_ind
   end
 end
 
-function analyse_sparsity_pattern!(ci, csp, sets, C::PsdConeTriangle{T}, k, sp_ind) where {T <: Real}
+function analyse_sparsity_pattern!(ci, csp, sets, C::PsdConeTriangle{T}, k, sp_ind, merge_strategy) where {T <: Real}
   if length(csp) < C.dim
-    return _analyse_sparsity_pattern(ci, csp, C, k, sp_ind)
+    return _analyse_sparsity_pattern(ci, csp, C, k, sp_ind, merge_strategy)
   else
    sets[k] = COSMO.DensePsdConeTriangle{T}(C.dim)
     return sp_ind
   end
 end
 
-function _analyse_sparsity_pattern(ci, csp, C::Union{PsdCone{<: Real}, PsdConeTriangle{<: Real}}, k, sp_ind) where {T <: Real}
+function _analyse_sparsity_pattern(ci, csp, C::Union{PsdCone{<: Real}, PsdConeTriangle{<: Real}}, k, sp_ind, merge_strategy) where {T <: Real}
   ordering = find_graph!(ci, csp, C.sqrt_dim, C)
-  ci.sp_arr[sp_ind] = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering)
+  ci.sp_arr[sp_ind] = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering, merge_strategy)
   push!(ci.psd_cones_ind, k)
   ci.num_decomposable += 1
   return sp_ind + 1
@@ -369,17 +369,17 @@ function psd_complete!(A::AbstractMatrix, N::Int64, sntree::SuperNodeTree, p::Ar
   W = A[p, p]
   W = Matrix(W)
   num_cliques = COSMO.num_cliques(sntree)
-  # go through supernode tree in descending order (given a post-ordering)
+  # go through supernode tree in descending order (given a post-ordering). This is ensured in the get_snd, get_sep functions
   snd_post_order = sntree.snd_post
   for j = (num_cliques - 1):-1:1
-    snd_id = snd_post_order[j]
+    #snd_id = snd_post_order[j]
 
     # in order to obtain ν, α the vertex numbers of the supernode are mapped to the new position of the permuted matrix
     # index set of snd(i) sorted using the numerical ordering i,i+1,...i+ni
-    ν = get_snd(sntree, snd_id)
+    ν = get_snd(sntree, j)
     #clique = get_clique(sntree, snd_id)
     # index set containing the elements of col(i) \ snd(i) sorted using numerical ordering σ(i)
-    α = get_sep(sntree, snd_id)
+    α = get_sep(sntree, j)
 
     # index set containing the row indizes of the lower-triangular zeros in column i (i: representative index) sorted by σ(i)
     i = ν[1]

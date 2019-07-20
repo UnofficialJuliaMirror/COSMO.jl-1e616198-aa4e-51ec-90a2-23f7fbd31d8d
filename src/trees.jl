@@ -3,10 +3,11 @@ mutable struct SuperNodeTree
 	snd::Array{Array{Int64,1},1} #vertices of supernodes stored in one array (also called residuals)
 	snd_par::Array{Int64,1}  # parent of supernode k is supernode j=snd_par[k]
 	snd_post::Array{Int64,1} # post order of supernodal elimination tree
+	snd_child::Array{Array{Int64,1},1}
 	post::Array{Int64} # post ordering of the vertices in elim tree σ(j) = v
 	par::Array{Int64}
 	sep::Array{Array{Int64,1},1} #vertices of clique seperators
-	nBlk::Array{Int64,1} #sizes of submatrizes defined by each clique
+	nBlk::Array{Int64,1} #sizes of submatrizes defined by each clique, sorted by post-ordering, e.g. size of clique with order 3 => nBlk[3]
 	function SuperNodeTree(L)
 		par = etree(L)
 		child = child_from_par(par)
@@ -23,11 +24,15 @@ mutable struct SuperNodeTree
 		# # psd completion step the matrix is completed from lower-right to top-left
 	 	snd_post = post_order(snd_par, snd_child)
 	 	# given the supernodes (clique residuals) find the clique separators
-		sep, nBlk = find_separators(L, snd, snd_par, post)
+		sep = find_separators(L, snd, snd_par, post)
 
-		new(snd, snd_par, snd_post, post, par, sep, nBlk)
+		new(snd, snd_par, snd_post, snd_child, post, par, sep, [0])
 	end
-
+	# FIXME: only for debugging purposes
+	function SuperNodeTree(res, par, post, sep)
+		child = child_from_par(par)
+  	new(res, par, post, child, [1], [1], sep, [1])
+	end
 end
 
 function sort_children!(child, post)
@@ -48,7 +53,7 @@ function invert_order(sigma::Array{Int64,1})
 end
 
 function num_cliques(sntree::SuperNodeTree)
-	return length(sntree.snd_par)
+	return length(sntree.snd_post)
 end
 
 # elimination tree algorithm from H.Liu - A Compact Row Storage Scheme for Cholesky Factors Using Elimination Trees
@@ -93,12 +98,14 @@ function etree(L)
 end
 
 # perform a depth-first-search to determine the post order of the tree defined by parent and children vectors
-function post_order(par::Array{Int64,1}, child::Array{Array{Int64,1}})
-	N = length(par)
-	order = zeros(Int64, N)
+# FIXME: This can be made a lot faster for the case that merges happened, i.e. Nc != length(par)
+
+function post_order(par::Array{Int64,1}, child::Array{Array{Int64,1}}, Nc::Int64)
+
+	order = (Nc + 1) * ones(Int64, length(par))
 	root = findall(x ->x == 0, par)[1]
 	stack = Array{Int64}(undef, 0)
-	iii = N
+	iii = Nc
 	push!(stack, root)
 	while !isempty(stack)
 		v = pop!(stack)
@@ -106,11 +113,14 @@ function post_order(par::Array{Int64,1}, child::Array{Array{Int64,1}})
 		iii -= 1
 		push!(stack, child[v]...)
 	end
-	post = collect(1:N)
+	post = collect(1:length(par))
 	sort!(post, by = x-> order[x])
+
+	# if merges happened, remove the entries pointing to empty arrays / cliques
+	Nc != length(par) && resize!(post, Nc)
 	return post
 end
-
+post_order(par::Array{Int64,1}, child::Array{Array{Int64,1}}) = post_order(par, child, length(par))
 
 
 function child_from_par(par::Array{Int64,1})
@@ -123,16 +133,23 @@ function child_from_par(par::Array{Int64,1})
 	return child
 end
 
+# Using the post order ensures that no empty arrays from the clique merging are returned
 function get_snd(sntree::SuperNodeTree, ind::Int64)
-		return sntree.snd[ind]
+		return sntree.snd[sntree.snd_post[ind]]
 end
 
 function get_sep(sntree::SuperNodeTree, ind::Int64)
-		return sntree.sep[ind]
+		return sntree.sep[sntree.snd_post[ind]]
+end
+
+# the block sizes are stored in post order, e.g. if clique 4 (stored in pos 4) has order 2, then nBlk[2] represents the size of clique 4
+function get_nBlk(sntree::SuperNodeTree, ind::Int64)
+		return sntree.nBlk[ind]
 end
 
 function get_clique(sntree::SuperNodeTree, ind::Int64)
-	return union(sntree.snd[ind], sntree.sep[ind])
+	c = sntree.snd_post[ind]
+	return union(sntree.snd[c], sntree.sep[c])
 end
 
 function print_cliques(sntree::SuperNodeTree)
@@ -235,8 +252,6 @@ function find_separators(L, snodes::Array{Array{Int64,1},1}, supernode_par::Arra
 	Nc = length(supernode_par)
 	sep = [Array{Int64}(undef, 0) for i = 1:Nc]
 
-	nBlk = zeros(Int64, Nc)
-
 	for iii = 1:Nc
 		vRep = snodes[iii][1]
 
@@ -245,10 +260,9 @@ function find_separators(L, snodes::Array{Array{Int64,1},1}, supernode_par::Arra
 		sep[iii] = adjPlus
 		setdiff!(sep[iii], snodes[iii])
 
-		nBlk[iii] = Base.power_by_squaring(length(sep[iii]) + length(snodes[iii]), 2)
 	end
 
-	return sep, nBlk
+	return sep
 
 end
 
@@ -396,38 +410,283 @@ end
 # -------------------------------------
 # Functions related to clique merging
 # -------------------------------------
+"""
+    AbstractMergeStrategy
+
+A merge strategy determines how the cliques in a clique tree are merged to improve computation time of the projection. Each merge receipt should
+implement the following functions:
+
+ - initialise!: Initialise the graph / tree from the input clique tree, allocate memory
+ - traverse: A method that determines how the clique tree / graph is traversed
+ - evaluate: A method that decides whether to merge two cliques
+ - update!: A method to update local strategy-related information after a merge
+"""
+abstract type AbstractMergeStrategy end
+
+
+
+"""
+    NoMerge() <: AbstractMergeStrategy
+A strategy that does not merge cliques.
+"""
+ struct NoMerge <: AbstractMergeStrategy end
+
+
+abstract type AbstractEdgeScore end
+
+
+struct RelIntersect <: AbstractEdgeScore end
+struct ComplexityScore <: AbstractEdgeScore end
+merge_cliques!(t, strategy) = merge_cliques!(t, strategy())
+merge_cliques!(t::SuperNodeTree, strategy::NoMerge) = nothing
+function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
+	# strategy = strategy()
+
+	initialise!(t, strategy)
+
+	while !strategy.stop
+		# find two merge candidates
+			cand = traverse(t, strategy)
+		@show(cand)
+
+		# evaluate wether to merge the candidates
+		if evaluate(t, strategy, cand)
+			merge_cliques!(t, cand)
+		end
+
+		strategy.stop && break
+		# update strategy information after the merge
+		update!(strategy, t, cand)
+	end
+
+	# number of cliques
+	Nc = length(findall(x -> x != -1, t.snd_par))
+	# the merging creates empty supernodes and seperators, recalculate a post order for the supernodes
+ 	 snd_post = post_order(t.snd_par, t.snd_child, Nc)
+ 	 t.snd_post = snd_post
+
+ 	# recalculate block sizes (attention: the block sizes are stored in post order)
+	t.nBlk = zeros(Nc)
+  for iii = 1:Nc
+  	c = snd_post[iii]
+		t.nBlk[iii] = Base.power_by_squaring(length(t.sep[c]) + length(t.snd[c]), 2)
+  end
+  return nothing
+end
+
+
+function merge_cliques!(t::SuperNodeTree, cand::Tuple{Int64,Int64})
+	cand[1] < cand[2] ? merge_child!(t, cand) : merge_sibling!(t, cand)
+end
+
+# Merge two cliques that are in a parent (cand[1]) - child (cand[2]) relationship
+function merge_child!(t::SuperNodeTree, cand::Tuple{Int64,Int64})
+	p = cand[1]
+	ch = cand[2]
+
+	# merge child's vertex sets into parent's vertex set
+	push!(t.snd[p], t.snd[ch]...)
+	t.snd[ch] = [] #necessary or just leave it
+	t.sep[ch] = []
+
+	# update parent structure
+	@. t.snd_par[t.snd_child[ch]] = p
+	t.snd_par[ch] = -1 #-1 instead of NaN, effectively remove that entry from the parent list
+
+	# update children structure
+	filter!(x -> x != ch, t.snd_child[p])
+	push!(t.snd_child[p], t.snd_child[ch]...)
+	t.snd_child[ch] = []
+
+	return nothing
+end
+
+# Merge two cliques that are in a sibling relationship
+function merge_sibling!(t::SuperNodeTree, cand::Tuple{Int64,Int64})
+	c1 = cand[1]
+	c2 = cand[2]
+	# merge vertex set of cand[2] into cand[1]
+	push!(t.snd[c1], t.snd[c2]...)
+	t.snd[c2] = []
+	union!(t.sep[c1], t.sep[c2])
+	t.sep[c2] = []
+
+	@. t.snd_par[t.snd_child[c2]] = c1
+	t.snd_par[c2] = -1
+
+	# update children structure
+	push!(t.snd_child[c1], t.snd_child[c2]...)
+	t.snd_child[c2] = []
+
+	return nothing
+end
+
+"""
+    NoMerge() <: AbstractMergeStrategy
+A strategy that does not merge cliques.
+"""
+ struct NoMerge <: AbstractMergeStrategy end
+
+
+"""
+    PairwiseMerge <: AbstractMergeStrategy
+
+A merge strategy that calculates the edge metric `A ∩ B / A ∪ B` for every two cliques that are in a parent-child or sibling relationship. The resulting clique
+graph is traversed from the highest edge metric to the lowest.
+"""
+mutable struct PairwiseMerge <: AbstractMergeStrategy
+	stop::Bool
+	edges::AbstractMatrix
+	edge_score::AbstractEdgeScore
+
+	function PairwiseMerge(; edge_score = RelIntersect)
+		new(false, spzeros(Float64, 0, 0), edge_score)
+	end
+end
 
 # compute the edge set of the initial clique graph, only consider parent-child and sibling-sibling relationships
-function initial_clique_graph(t)
-	n_cliques = length(t.par)
-	edges = spzeros(Float64, n_cliques, n_cliques)
+function initialise!(t, strategy::PairwiseMerge)
+	n_cliques = length(t.snd_par)
+	strategy.edges = spzeros(Float64, n_cliques, n_cliques)
 
 	# following a descending post-order, add edges
-	for i = 1:length(t.post)
-		clique_ind = t.post[i]
-		children = t.child[clique_ind]
+	for i = 1:length(t.snd_post)
+		clique_ind = t.snd_post[i]
+		children = t.snd_child[clique_ind]
 		n_children = length(children)
 		# add edge to each child (father: row, child: col) (Upper Triangle)
 		for (j, ch) in enumerate(children)
-			edges[clique_ind, ch] = edge_metric_parent(t.res, t.sep, clique_ind, ch)
+			strategy.edges[clique_ind, ch] = edge_metric_parent(t.snd, t.sep, clique_ind, ch, strategy.edge_score)
 
 			# add edges between siblings combinations (Lower Triangle)
 			for sib in view(children,(j+1):n_children)
-				edges[sib, ch] = edge_metric_siblings(t.res, t.sep, ch, sib)
+				strategy.edges[sib, ch] = edge_metric_siblings(t.snd, t.sep, ch, sib, strategy.edge_score)
 			end
 		end
 	end
-	return edges
+	return nothing
 end
 
+traverse(t, strategy::PairwiseMerge) = traverse(t, strategy, strategy.edge_score)
+function traverse(t, strategy::PairwiseMerge, edge_score::RelIntersect)
+	~, ind = findmax(strategy.edges)
+	return (ind[1], ind[2])
+end
+
+function traverse(t, strategy::PairwiseMerge, edge_score::ComplexityScore)
+	~, ind = findmax(strategy.edges.nzval)
+	r = strategy.edges.rowval[ind]
+	c = findfirst(x -> x >= ind, strategy.edges.colptr)
+	if strategy.edges.colptr[c] > ind
+		c -= 1
+	end
+	return (r, c)
+end
+
+evaluate(t, strategy::PairwiseMerge, cand) = evaluate(t, strategy, cand, strategy.edge_score)
+
+function evaluate(t, strategy::PairwiseMerge, cand, edge_score::RelIntersect)
+	c1 = cand[1]
+	c2 = cand[2]
+
+	# individual block sizes
+	n_1 = length(t.snd[c1]) + length(t.sep[c1])
+	n_2 = length(t.snd[c2]) + length(t.sep[c2])
+
+	# merged block size
+	n_m = n_1 + length(t.snd[c2])
+	n_ops_diff = compute_complexity_savings(n_1, n_2, n_m)
+
+	do_merge = (n_ops_diff >= 0)
+
+	if !do_merge
+		strategy.stop = true
+	end
+	return do_merge
+end
+
+function evaluate(t, strategy::PairwiseMerge, cand, edge_score::ComplexityScore)
+	do_merge = (strategy.edges[cand[1], cand[2]] >= 0)
+
+	if !do_merge
+		strategy.stop = true
+	end
+	return do_merge
+end
+
+# Assuming the complexity of the projection is roughly O(n^3), how many operations are saved by projection the merged cliques
+# instead of the individual cliques
+compute_complexity_savings(n_1::Int64, n_2::Int64, n_m::Int64) = n_1^3 - n_2^3 - n_m^3
+
+# Approximates the number of operations for one projection of all the cliques in the tree
+compute_complexity(t::COSMO.SuperNodeTree) = sum(map(x -> x^3, t.nBlk))
+
+
+
+# After a merge operation update the information of the strategy
+function update!(strategy::PairwiseMerge, t, cand)
+	c1 = cand[1]
+	c2 = cand[2]
+	edges = strategy.edges
+
+	# remove edge value between c1 and c2 and all to c2
+	edges[c1, c2] = 0
+	@. edges[c2, :] = 0
+	@. edges[:, c2] = 0
+
+	# recalculate edge values of c1's children
+	for (j, ch) in enumerate(t.snd_child[c1])
+		edges[c1, ch] = COSMO.edge_metric_parent(t.snd, t.sep, c1, ch)
+	end
+
+	# edge to c1's parent (for all non-root nodes)
+	p = t.snd_par[c1]
+	if p > 0
+		edges[p, c1] = COSMO.edge_metric_parent(t.snd, t.sep, p, c1)
+
+		# edges to c1's siblings
+		siblings = t.snd_child[p]
+		for sib in siblings
+			if sib != c1
+				# make sure it's stored in the lower triangle of matrix edges
+				if sib < c1
+					edges[c1, sib] = COSMO.edge_metric_siblings(t.snd, t.sep, c1, sib)
+				else
+					edges[sib, c1] = COSMO.edge_metric_siblings(t.snd, t.sep, c1, sib)
+				end
+			end
+		end
+	end
+end
+
+
 # computes the edge metric for cliques C_a and C_b: (C_a ∩ C_b) / (C_a ∪ C_b) where C_a is the parent of C_b
-function edge_metric_parent(res, sep, c_a, c_b)
+function edge_metric_parent(res, sep, c_a, c_b, edge_score::RelIntersect)
 	return length(sep[c_b]) / (length(sep[c_a]) + length(res[c_a]) + length(res[c_b]))
 end
 
 # computes the edge metric for cliques C_a and C_b: (C_a ∩ C_b) / (C_a ∪ C_b) where C_a is the sibling of C_b
-function edge_metric_siblings(res, sep, c_a, c_b)
+function edge_metric_siblings(res, sep, c_a, c_b, edge_score::RelIntersect)
 	return intersect_dim(sep[c_a], sep[c_b]) / (length(res[c_a]) + length(res[c_b]) + union_dim(sep[c_a], sep[c_b]))
+end
+
+# computes the edge metric for cliques C_a and C_b in terms of how the number of projection operationss change when merged
+function edge_metric_parent(res, sep, c_a, c_b, edge_score::ComplexityScore)
+	# individual block sizes
+	n_1 = length(res[c_a]) + length(sep[c_a])
+	n_2 = length(res[c_b]) + length(sep[c_b])
+	# merged block size
+	n_m = n_1 + length(res[c_b])
+	return compute_complexity_savings(n_1, n_2, n_m)
+end
+
+# computes the edge metric for cliques C_a and C_b: (C_a ∩ C_b) / (C_a ∪ C_b) where C_a is the sibling of C_b
+function edge_metric_siblings(res, sep, c_a, c_b, edge_score::ComplexityScore)
+	n_1 = length(res[c_a]) + length(sep[c_a])
+	n_2 = length(res[c_b]) + length(sep[c_b])
+	# merged block size
+	n_m = n_1 + n_2 - intersect_dim(sep[c_a], sep[c_b])
+	return compute_complexity_savings(n_1, n_2, n_m)
 end
 
 # Finds the size of the set A ∩ B under the assumption that B only has unique elements
@@ -448,97 +707,46 @@ function union_dim(A::AbstractVector, B::AbstractVector)
 	return dim
 end
 
-function find_merge_candidates(edges)
-	~, ind = findmax(edges)
-	return ind
-end
+"""
+    TreeTraversalMerge(t_fill = 5, t_size = 5) <: AbstractMergeStrategy
 
-function merge_cliques!(t, edges, cand)
-	cand[1] < cand[2] ? merge_child!(t, edges, cand) : merge_sibling!(t, edges, cand)
-end
-
-# Merge two cliques that are in a parent (cand[1]) - child (cand[2]) relationship
-function merge_child!(t, edges, cand)
-	p = cand[1]
-	ch = cand[2]
-
-	# merge child's vertex sets into parent's vertex set
-	push!(t.res[p], t.res[ch]...)
-	t.res[ch] = [] #necessary or just leave it
-	t.sep[ch] = []
-
-	# update parent structure
-	@. t.par[t.child[ch]] = p
-	t.par[ch] = -1 #-1 instead of NaN, effectively remove that entry from the parent list
-
-	# update children structure
-	filter!(x -> x != ch, t.child[p])
-	push!(t.child[p], t.child[ch]...)
-	t.child[ch] = []
-
-	# remove edge value between parent and child
-	# edges[p, ch] = 0
-
-	# # remove all edge values to the child
-	# @. edges[ch, :] = 0
-	# @. edges[:, ch] = 0
-	return nothing
-end
-
-# Merge two cliques that are in a sibling relationship
-function merge_sibling!(t, edges, cand)
-	c1 = cand[1]
-	c2 = cand[2]
-	# merge vertex set of cand[2] into cand[1]
-	push!(t.res[c1], t.res[c2]...)
-	t.res[c2] = []
-	union!(t.sep[c1], t.sep[c2])
-	t.sep[c2] = []
-
-	@. t.par[t.child[c2]] = c1
-	t.par[c2] = -1
-
-	# update children structure
-	push!(t.child[c1], t.child[c2]...)
-	t.child[c2] = []
-
-
-	return nothing
-end
-
-# After a merge operation update the affected edges
-function update!(t, edges, cand)
-	c1 = cand[1]
-	c2 = cand[2]
-
-	# remove edge value between c1 and c2 and all to c2
-	edges[c1, c2] = 0
-	@. edges[c2, :] = 0
-	@. edges[:, c2] = 0
-
-	# recalculate edge values of c1's children
-	for (j, ch) in enumerate(t.child[c1])
-		edges[c1, ch] = COSMO.edge_metric_parent(t.res, t.sep, c1, ch)
-	end
-
-	# edge to c1's parent (for all non-root nodes)
-	p = t.par[c1]
-	if p > 0
-		edges[p, c1] = COSMO.edge_metric_parent(t.res, t.sep, p, c1)
-
-		# edges to c1's siblings
-		siblings = t.child[p]
-		for sib in siblings
-			if sib != c1
-				# make sure it's stored in the lower triangle of matrix edges
-				if sib < c1
-					edges[c1, sib] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
-				else
-					edges[sib, c1] = COSMO.edge_metric_siblings(t.res, t.sep, c1, sib)
-				end
-			end
-		end
+The merge strategy suggested in Sun / Andersen - Decomposition in conic optimization with partially separable structure (2013).
+The initial clique tree is traversed in topological order and cliques are greedily merged to their parent if evaluate() returns true.
+"""
+mutable struct TreeTraversalMerge <: AbstractMergeStrategy
+	stop::Bool
+	clique_ind::Int64
+	t_fill::Int64
+	t_size::Int64
+	function TreeTraversalMerge(; t_fill = 5, t_size = 5)
+		new(false, 2, t_fill, t_size)
 	end
 end
 
-evaluate_merge_state(t) = true
+initialise!(t, strategy::TreeTraversalMerge) = nothing
+
+# traverse tree in topological order and return clique and its parent
+function traverse(t, strategy::TreeTraversalMerge)
+	c = t.snd_post[strategy.clique_ind]
+	return (t.snd_par[c], c)
+end
+
+function evaluate(t, strategy::TreeTraversalMerge, cand)
+	c = cand[1]
+	par = cand[2]
+	n_sep = length(t.sep[c])
+	n_sep_par = length(t.sep[par])
+	n_cl = length(t.snd[c]) + n_sep
+	n_cl_par = length(t.snd[par]) + n_sep
+	return (n_cl_par - n_sep) * (n_cl - n_sep) <= strategy.t_fill || max(n_cl - n_sep, n_cl_par - n_sep_par) <= strategy.t_size
+end
+
+function update!(strategy::TreeTraversalMerge, t, cand)
+	# break if node was last one
+	if strategy.clique_ind == length(t.snd)
+		strategy.stop = true
+	# otherwise increment node index
+	else
+		strategy.clique_ind += 1
+	end
+end

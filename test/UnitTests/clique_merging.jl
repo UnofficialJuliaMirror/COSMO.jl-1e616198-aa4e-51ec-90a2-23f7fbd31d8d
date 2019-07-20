@@ -2,18 +2,18 @@
 using COSMO, SparseArrays, LinearAlgebra, Test
 
 
-mutable struct SnodeTree
-  res::Array{Array{Int64, 1},1}
-  sep::Array{Array{Int64, 1},1}
-  par::Array{Int64}
-  post::Array{Int64}
-  child::Array{Array{Int64, 1},1}
-  function SnodeTree(res, sep, par, post)
-    # compute children structure
-    child = COSMO.child_from_par(par)
-    new(res, sep, par, post, child)
-  end
-end
+# mutable struct SnodeTree
+#   res::Array{Array{Int64, 1},1}
+#   sep::Array{Array{Int64, 1},1}
+#   par::Array{Int64}
+#   post::Array{Int64}
+#   child::Array{Array{Int64, 1},1}
+#   function SnodeTree(res, sep, par, post)
+#     # compute children structure
+#     child = COSMO.child_from_par(par)
+#     new(res, sep, par, post, child)
+#   end
+# end
 
 # let's consider the following graph with cliques (seperators | residuals)
 #       ---------

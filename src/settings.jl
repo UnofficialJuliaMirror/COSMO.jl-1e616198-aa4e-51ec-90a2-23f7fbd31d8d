@@ -70,6 +70,8 @@ mutable struct Settings
 	time_limit::Float64
 	obj_true::Float64
 	obj_true_tol::Float64
+	merge_strategy::Union{Type{<: AbstractMergeStrategy}, OptionsFactory{<: AbstractMergeStrategy}}
+
 	#constructor
 	function Settings(;
 		rho=0.1,
@@ -98,11 +100,16 @@ mutable struct Settings
     complete_dual = false,
 		time_limit = 0.0,
 		obj_true = NaN,
-		obj_true_tol = 1e-3
+		obj_true_tol = 1e-3,
+		merge_strategy = PairwiseMerge
 		)
 	if !isa(kkt_solver, OptionsFactory)
 		kkt_solver = with_options(kkt_solver)
 	end
-	new(rho, sigma, alpha, eps_abs, eps_rel, eps_prim_inf, eps_dual_inf, max_iter, verbose, kkt_solver, check_termination, check_infeasibility, scaling, MIN_SCALING, MAX_SCALING, adaptive_rho, adaptive_rho_interval, adaptive_rho_tolerance, verbose_timing, RHO_MIN, RHO_MAX, RHO_TOL, decompose, complete_dual, time_limit, obj_true, obj_true_tol)
+
+	if !isa(merge_strategy, OptionsFactory)
+		merge_strategy = with_options(merge_strategy)
+	end
+	new(rho, sigma, alpha, eps_abs, eps_rel, eps_prim_inf, eps_dual_inf, max_iter, verbose, kkt_solver, check_termination, check_infeasibility, scaling, MIN_SCALING, MAX_SCALING, adaptive_rho, adaptive_rho_interval, adaptive_rho_tolerance, verbose_timing, RHO_MIN, RHO_MAX, RHO_TOL, decompose, complete_dual, time_limit, obj_true, obj_true_tol, merge_strategy)
 end
 end
