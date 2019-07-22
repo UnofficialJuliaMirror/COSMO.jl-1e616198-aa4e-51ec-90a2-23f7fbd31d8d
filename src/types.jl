@@ -187,6 +187,8 @@ mutable struct SparsityPattern
     # clique merging
     merge_cliques!(sntree, merge_strategy)
 
+    calculate_block_dimensions!(sntree)
+
     return new(sntree, ordering, reverse_ordering)
   end
 end

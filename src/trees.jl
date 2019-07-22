@@ -1,4 +1,85 @@
+export print_merge_logs, print_clique_sizes
 
+"""
+		MergeLog
+
+A struct to analyse the clique merges. Introduced for debugging purposes.
+"""
+mutable struct MergeLog
+	num::Int64 # number of merges
+	clique_pairs::Array{Tuple{Int64, Int64}, 1} # ordered pair merges
+	decisions::Array{Bool, 1} # at what step was merged
+	function MergeLog()
+		new(0, Array{Tuple}(undef, 0), Array{Bool}(undef, 0))
+	end
+end
+
+function print_merge_logs(ws; print_max = 10)
+	sp_arr = ws.ci.sp_arr
+	# print the merge logs for each sparsity pattern
+	println(">>> Merge Logs:")
+	for (iii, sp) in enumerate(sp_arr)
+		m_log = sp.sntree.merge_log
+		println("Sparsity Pattern Nr. $(iii), Graph Size: $(length(sp.sntree.par))")
+		println("\t Num merges: $(m_log.num)\n\t Num decisions: $(length(m_log.decisions))\n\t Pairs:")
+
+		# only print a certain number
+		print_max = min(print_max, length(m_log.decisions))
+		for (jjj, p) in enumerate(m_log.clique_pairs[1:print_max])
+			println("\t \tC_A: $(p[1]), C_B: $(p[2]) ($(m_log.decisions[jjj]))")
+		end
+
+	end
+end
+
+get_merge_logs(ws) = map(x -> x.sntree.merge_log, ws.ci.sp_arr)
+
+function print_clique_sizes(ws)
+	sp_arr = ws.ci.sp_arr
+	# print the merge logs for each sparsity pattern
+	println(">>> Clique Dimensions:")
+	for (iii, sp) in enumerate(sp_arr)
+		println("Sparsity Pattern Nr. $(iii), Graph Size: $(length(sp.sntree.par))")
+
+		t = sp.sntree
+		Nc = length(t.snd_post)
+		# block sizes
+		sizes = zeros(Int64, Nc)
+		# occurences of block size
+		occ = zeros(Int64, Nc)
+		for jjj = 1:Nc
+			c = t.snd_post[jjj]
+			dim = length(t.snd[c]) + length(t.sep[c])
+			# try to check if that dimension occured before, if not add, otherwise increment occ
+			ind = findfirst(x -> x == dim, sizes)
+
+			if ind != nothing
+				occ[ind] = occ[ind] + 1
+			else
+				sizes[jjj] = dim
+				occ[jjj] = 1
+			end
+		end
+
+		# consolidate
+		filter!(x -> x != 0, occ)
+		filter!(x -> x != 0, sizes)
+
+		# sort sizes
+		p = sortperm(sizes)
+		sizes = sizes[p]
+		occ = occ[p]
+
+		for (jjj, dim) in enumerate(sizes)
+			println("$(occ[jjj])x dim:$(dim)")
+		end
+	end
+end
+"""
+		SuperNodeTree
+
+A structure to represent and analyse the sparsity pattern of the input matrix L.
+"""
 mutable struct SuperNodeTree
 	snd::Array{Array{Int64,1},1} #vertices of supernodes stored in one array (also called residuals)
 	snd_par::Array{Int64,1}  # parent of supernode k is supernode j=snd_par[k]
@@ -8,6 +89,7 @@ mutable struct SuperNodeTree
 	par::Array{Int64}
 	sep::Array{Array{Int64,1},1} #vertices of clique seperators
 	nBlk::Array{Int64,1} #sizes of submatrizes defined by each clique, sorted by post-ordering, e.g. size of clique with order 3 => nBlk[3]
+	merge_log::MergeLog
 	function SuperNodeTree(L)
 		par = etree(L)
 		child = child_from_par(par)
@@ -26,7 +108,7 @@ mutable struct SuperNodeTree
 	 	# given the supernodes (clique residuals) find the clique separators
 		sep = find_separators(L, snd, snd_par, post)
 
-		new(snd, snd_par, snd_post, snd_child, post, par, sep, [0])
+		new(snd, snd_par, snd_post, snd_child, post, par, sep, [0], MergeLog())
 	end
 	# FIXME: only for debugging purposes
 	function SuperNodeTree(res, par, post, sep)
@@ -231,7 +313,7 @@ function find_supernodes(par::Array{Int64,1}, child::Array{Array{Int64,1}}, post
 	N = length(par)
 	# number of representative vertices == number of supernodes
 	Nrep = length(supernode_par)
-	snode = [Array{Int64}(undef, 0) for i = 1:Nrep]
+	snode = [Array{Int64}(undef, 0) for i = 1:N]
 
 	for iii in post
 		f = snInd[iii]
@@ -242,6 +324,7 @@ function find_supernodes(par::Array{Int64,1}, child::Array{Array{Int64,1}}, post
 			push!(snode[f], iii)
 		end
 	end
+	filter!(x -> !isempty(x), snode)
 	return snode, supernode_par
 
 end
@@ -441,19 +524,18 @@ merge_cliques!(t, strategy) = merge_cliques!(t, strategy())
 merge_cliques!(t::SuperNodeTree, strategy::NoMerge) = nothing
 function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
 	# strategy = strategy()
-	 COSMO.print_cliques(t)
-  @show(t.snd_post,t.nBlk, t.snd_par)
 
 	initialise!(t, strategy)
 
 	while !strategy.stop
 		# find two merge candidates
 		cand = traverse(t, strategy)
-		@show(cand)
 		# evaluate wether to merge the candidates
-		if evaluate(t, strategy, cand)
+		do_merge = evaluate(t, strategy, cand)
+		if do_merge
 			merge_two_cliques!(t, cand, strategy)
 		end
+		log_merge!(t, do_merge, cand)
 
 		strategy.stop && break
 		# update strategy information after the merge
@@ -466,18 +548,25 @@ function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
  	 snd_post = post_order(t.snd_par, t.snd_child, Nc)
  	 t.snd_post = snd_post
 
- 	# recalculate block sizes (notice: the block sizes are stored in post order)
-	t.nBlk = zeros(Nc)
-  for iii = 1:Nc
-  	c = snd_post[iii]
-		t.nBlk[iii] = Base.power_by_squaring(length(t.sep[c]) + length(t.snd[c]), 2)
-  end
-  COSMO.print_cliques(t)
-  @show(t.snd_post,t.nBlk, t.snd_par)
   return nothing
 end
 
+# calculate block sizes (notice: the block sizes are stored in post order)
+function calculate_block_dimensions!(t::SuperNodeTree)
+	Nc = length(findall(x -> x != -1, t.snd_par))
+	t.nBlk = zeros(Nc)
+  for iii = 1:Nc
+  	c = t.snd_post[iii]
+		t.nBlk[iii] = Base.power_by_squaring(length(t.sep[c]) + length(t.snd[c]), 2)
+  end
+end
 
+function log_merge!(t::SuperNodeTree, do_merge::Bool, cand::Tuple{Int64, Int64})
+	push!(t.merge_log.clique_pairs, cand)
+	push!(t.merge_log.decisions, do_merge)
+	do_merge && (t.merge_log.num += 1)
+	return nothing
+end
 
 
 
@@ -524,8 +613,10 @@ function merge_sibling!(t::SuperNodeTree, cand::Tuple{Int64,Int64})
 	return nothing
 end
 
+
+
 """
-    NoMerge() <: AbstractMergeStrategy
+    NoMerge <: AbstractMergeStrategy
 A strategy that does not merge cliques.
 """
  struct NoMerge <: AbstractMergeStrategy end
@@ -541,7 +632,6 @@ mutable struct PairwiseMerge <: AbstractMergeStrategy
 	stop::Bool
 	edges::AbstractMatrix
 	edge_score::AbstractEdgeScore
-
 	function PairwiseMerge(; edge_score = RelIntersect())
 		new(false, spzeros(Float64, 0, 0), edge_score)
 	end
@@ -724,6 +814,7 @@ mutable struct TreeTraversalMerge <: AbstractMergeStrategy
 	clique_ind::Int64
 	t_fill::Int64
 	t_size::Int64
+
 	function TreeTraversalMerge(; t_fill = 5, t_size = 5)
 		new(false, 2, t_fill, t_size)
 	end
