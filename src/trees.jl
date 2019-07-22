@@ -426,7 +426,7 @@ abstract type AbstractMergeStrategy end
 
 
 """
-    NoMerge() <: AbstractMergeStrategy
+    NoMerge <: AbstractMergeStrategy
 A strategy that does not merge cliques.
 """
  struct NoMerge <: AbstractMergeStrategy end
@@ -441,17 +441,18 @@ merge_cliques!(t, strategy) = merge_cliques!(t, strategy())
 merge_cliques!(t::SuperNodeTree, strategy::NoMerge) = nothing
 function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
 	# strategy = strategy()
+	 COSMO.print_cliques(t)
+  @show(t.snd_post,t.nBlk, t.snd_par)
 
 	initialise!(t, strategy)
 
 	while !strategy.stop
 		# find two merge candidates
-			cand = traverse(t, strategy)
+		cand = traverse(t, strategy)
 		@show(cand)
-
 		# evaluate wether to merge the candidates
 		if evaluate(t, strategy, cand)
-			merge_cliques!(t, cand)
+			merge_two_cliques!(t, cand, strategy)
 		end
 
 		strategy.stop && break
@@ -465,19 +466,21 @@ function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
  	 snd_post = post_order(t.snd_par, t.snd_child, Nc)
  	 t.snd_post = snd_post
 
- 	# recalculate block sizes (attention: the block sizes are stored in post order)
+ 	# recalculate block sizes (notice: the block sizes are stored in post order)
 	t.nBlk = zeros(Nc)
   for iii = 1:Nc
   	c = snd_post[iii]
 		t.nBlk[iii] = Base.power_by_squaring(length(t.sep[c]) + length(t.snd[c]), 2)
   end
+  COSMO.print_cliques(t)
+  @show(t.snd_post,t.nBlk, t.snd_par)
   return nothing
 end
 
 
-function merge_cliques!(t::SuperNodeTree, cand::Tuple{Int64,Int64})
-	cand[1] < cand[2] ? merge_child!(t, cand) : merge_sibling!(t, cand)
-end
+
+
+
 
 # Merge two cliques that are in a parent (cand[1]) - child (cand[2]) relationship
 function merge_child!(t::SuperNodeTree, cand::Tuple{Int64,Int64})
@@ -539,7 +542,7 @@ mutable struct PairwiseMerge <: AbstractMergeStrategy
 	edges::AbstractMatrix
 	edge_score::AbstractEdgeScore
 
-	function PairwiseMerge(; edge_score = RelIntersect)
+	function PairwiseMerge(; edge_score = RelIntersect())
 		new(false, spzeros(Float64, 0, 0), edge_score)
 	end
 end
@@ -622,6 +625,9 @@ compute_complexity_savings(n_1::Int64, n_2::Int64, n_m::Int64) = n_1^3 - n_2^3 -
 compute_complexity(t::COSMO.SuperNodeTree) = sum(map(x -> x^3, t.nBlk))
 
 
+function merge_two_cliques!(t::SuperNodeTree, cand::Tuple{Int64,Int64}, strategy::PairwiseMerge)
+	cand[1] < cand[2] ? merge_child!(t, cand) : merge_sibling!(t, cand)
+end
 
 # After a merge operation update the information of the strategy
 function update!(strategy::PairwiseMerge, t, cand)
@@ -723,15 +729,18 @@ mutable struct TreeTraversalMerge <: AbstractMergeStrategy
 	end
 end
 
-initialise!(t, strategy::TreeTraversalMerge) = nothing
-
-# traverse tree in topological order and return clique and its parent
+function initialise!(t, strategy::TreeTraversalMerge)
+	# start with node that has second highest order
+	strategy.clique_ind = length(t.snd) - 1
+end
+# traverse tree in descending topological order and return clique and its parent, root has highest order
 function traverse(t, strategy::TreeTraversalMerge)
 	c = t.snd_post[strategy.clique_ind]
 	return (t.snd_par[c], c)
 end
 
 function evaluate(t, strategy::TreeTraversalMerge, cand)
+	strategy.stop && return false
 	c = cand[1]
 	par = cand[2]
 	n_sep = length(t.sep[c])
@@ -741,12 +750,16 @@ function evaluate(t, strategy::TreeTraversalMerge, cand)
 	return (n_cl_par - n_sep) * (n_cl - n_sep) <= strategy.t_fill || max(n_cl - n_sep, n_cl_par - n_sep_par) <= strategy.t_size
 end
 
+# TreeTraversal merge strategy always merges parent-child pairs
+merge_two_cliques!(t::SuperNodeTree, cand::Tuple{Int64,Int64}, strategy::TreeTraversalMerge) = merge_child!(t, cand)
+
+
 function update!(strategy::TreeTraversalMerge, t, cand)
-	# break if node was last one
-	if strategy.clique_ind == length(t.snd)
+	# try to merge last node of order 1, then stop
+	if strategy.clique_ind == 1
 		strategy.stop = true
-	# otherwise increment node index
+	# otherwise decrement node index
 	else
-		strategy.clique_ind += 1
+		strategy.clique_ind -= 1
 	end
 end

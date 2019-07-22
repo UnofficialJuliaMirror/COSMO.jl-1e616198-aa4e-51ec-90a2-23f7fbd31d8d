@@ -40,6 +40,7 @@ scaling | Number of scaling iterations | 10
 adaptive_rho | Automatic adaptation of step size parameter | true
 decompose | Activate to decompose chordal psd constraints | false
 complete_dual | Activate to complete the dual variable after decomposition | false
+merge_strategy | Choose a strategy for clique merging | PairwiseMerge
 time_limit | set solver time limit in s | 0
 """
 mutable struct Settings
