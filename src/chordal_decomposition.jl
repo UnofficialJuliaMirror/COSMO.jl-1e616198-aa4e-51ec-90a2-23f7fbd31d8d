@@ -190,9 +190,10 @@ function decompose!(H_I::Vector{Int64}, C_new, set_ind::Int64,  C::DecomposableC
 
   for iii = 1:num_cliques(sntree)
     # new stacked size
-    block_length = get_blk_length(sntree.nBlk[iii], C)
+    block_length = get_blk_length(get_nBlk(sntree, iii), C)
 
     c = COSMO.get_clique(sntree, iii)
+    # the graph and tree algorithms determined the cliques vertices of an AMD-permuted matrix. Since the location of the data hasn't changed in reality, we have to map the clique vertices back
     c = map(v -> sparsity_pattern.ordering[v], c)
     sort!(c)
     entry = COSMO.add_subblock_map!(H_I, c, block_length, original_size, entry, row_start, C)
