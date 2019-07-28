@@ -885,7 +885,7 @@ end
 merge_two_cliques!(t::SuperNodeTree, cand::Array{Int64, 1}, strategy::TreeTraversalMerge) = merge_child!(t, cand)
 
 
-function update!(strategy::TreeTraversalMerge, t, cand)
+function update!(strategy::TreeTraversalMerge, t, cand, ordered_cand)
 	# try to merge last node of order 1, then stop
 	if strategy.clique_ind == 1
 		strategy.stop = true
