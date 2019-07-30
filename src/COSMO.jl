@@ -19,6 +19,7 @@ end
 include("./algebra.jl")
 include("./projections.jl")
 include("./trees.jl")
+include("./clique_merging.jl")
 include("./settings.jl")            # TODO: unmodified - revisit
 include("./types.jl")               # some types still need tidying
 include("./constraint.jl")          # TODO: unmodified - revisit
