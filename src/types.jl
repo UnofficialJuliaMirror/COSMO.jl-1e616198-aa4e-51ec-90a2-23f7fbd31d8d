@@ -182,12 +182,13 @@ mutable struct SparsityPattern
     for i = 1:N
       reverse_ordering[ordering[i]] = i
     end
-    sntree = SuperNodeTree(L)
+    merge_strategy = merge_strategy()
+    sntree = SuperNodeTree(L, merge_strategy)
 
     # clique merging
     merge_cliques!(sntree, merge_strategy)
 
-    calculate_block_dimensions!(sntree)
+    calculate_block_dimensions!(sntree, merge_strategy)
 
     return new(sntree, ordering, reverse_ordering)
   end

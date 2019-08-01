@@ -369,10 +369,9 @@ function psd_complete!(A::AbstractMatrix, N::Int64, sntree::SuperNodeTree, p::Ar
   W = A[p, p]
   W = Matrix(W)
   num_cliques = COSMO.num_cliques(sntree)
+
   # go through supernode tree in descending order (given a post-ordering). This is ensured in the get_snd, get_sep functions
-  snd_post_order = sntree.snd_post
   for j = (num_cliques - 1):-1:1
-    #snd_id = snd_post_order[j]
 
     # in order to obtain ν, α the vertex numbers of the supernode are mapped to the new position of the permuted matrix
     # index set of snd(i) sorted using the numerical ordering i,i+1,...i+ni
