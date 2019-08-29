@@ -68,8 +68,10 @@ function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
     # the merging creates empty supernodes and seperators, recalculate a post order for the supernodes
     snd_post = post_order(t.snd_par, t.snd_child, Nc)
     t.snd_post = snd_post
+    t.connectivity = spzeros(0, 0)
   else
     t.snd_post = findall(x -> !isempty(x), t.snd)
+    t.connectivity = strategy.edges
   end
 
   return nothing
@@ -304,16 +306,17 @@ evaluate(t, strategy::PairwiseMerge, cand) = evaluate(t, strategy, cand, strateg
 
 function evaluate(t, strategy::PairwiseMerge, cand, edge_score::RelIntersect)
 
-  c1 = cand[1]
-  c2 = cand[2]
+  c1_ind = cand[1]
+  c2_ind = cand[2]
 
   # case if only one clique remains
-  if c1 == c2
+  if c1_ind == c2_ind
     strategy.stop = true
     return false
   end
 
-  n_ops_diff = edge_metric(c1, c2, ComplexityScore())
+
+  n_ops_diff = edge_metric(t.snd[c1_ind], t.snd[c2_ind], ComplexityScore())
   do_merge = (n_ops_diff >= 0)
 
   if !do_merge
@@ -408,7 +411,18 @@ function update!(strategy::PairwiseMerge, t, cand, ordered_cand)
 end
 
 
+function clique_intersections!(t::SuperNodeTree)
+  # iterate over the nonzeros of the connectivity matrix E which represents the clique graph and replace the value by
+  # |C_i ∩ C_j|
+  E = t.connectivity
 
+  for col in 1:size(E, 2)
+    for row in nzrange(E, col)
+      E[row, col] = intersect_dim(t.snd[row], t.snd[col])
+    end
+  end
+  return nothing
+end
 
 
 

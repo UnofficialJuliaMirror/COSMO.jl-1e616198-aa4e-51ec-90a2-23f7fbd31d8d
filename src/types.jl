@@ -186,7 +186,8 @@ mutable struct SparsityPattern
     sntree = SuperNodeTree(L, merge_strategy)
 
     # clique merging
-    merge_cliques!(sntree, merge_strategy)
+    @show(sntree.num)
+    sntree.num > 1 && merge_cliques!(sntree, merge_strategy)
 
     calculate_block_dimensions!(sntree, merge_strategy)
 
@@ -194,7 +195,6 @@ mutable struct SparsityPattern
   end
 end
 
-# To handle the case where a PSD cone is dense
 # -------------------------------------
 # Chordal Decomposition Information
 # -------------------------------------

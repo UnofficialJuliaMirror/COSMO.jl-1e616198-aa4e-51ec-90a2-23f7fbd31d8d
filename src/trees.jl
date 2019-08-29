@@ -51,6 +51,7 @@ mutable struct SuperNodeTree
 	num::Int64 # number of supernodes / cliques in tree
 	merge_log::MergeLog
 	strategy_type::DataType
+	connectivity::SparseMatrixCSC # to store the edges of the merged clique graph if a graph based merge strategy is used
 	function SuperNodeTree(L, merge_strategy)
 		par = etree(L)
 		child = child_from_par(par)
@@ -71,15 +72,15 @@ mutable struct SuperNodeTree
 	 	if typeof(merge_strategy) <: AbstractTreeBasedMerge
 	 		# given the supernodes (clique residuals) find the clique separators
 			sep = find_separators(L, snd, snd_par, post)
-			new(snd, snd_par, snd_post, snd_child, post, par, sep, [0], length(snd_post), MergeLog(), typeof(merge_strategy))
+			new(snd, snd_par, snd_post, snd_child, post, par, sep, [0], length(snd_post), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
 
 		# If the merge strategy is pairwise, we give up the tree structure and add the seperators to the supernodes
 		# the supernodes then represent the full clique
-		# after the clique merging a new clique tree will be computed
+		# after the clique merging a new clique tree will be computed before psd completion is performed
 		else
 			add_separators!(L, snd, snd_par, post)
 			@. snd_par = 0
-			new(snd, snd_par, snd_post, snd_child, post, par, [[0]], [0], length(snd_post), MergeLog(), typeof(merge_strategy))
+			new(snd, snd_par, snd_post, snd_child, post, par, [[0]], [0], length(snd_post), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
 		end
 	end
 
@@ -465,7 +466,7 @@ function find_graph!(ci, rows::Array{Int64, 1}, N::Int64, C::AbstractConvexSet)
 	row_val, col_val = COSMO.row_ind_to_matrix_indices(rows, N, C)
 	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true)#, perm = collect(1:N))
 	# this takes care of the case that QDLDL returns an unconnected adjacency matrix L
-	connect_graph!(F.L)
+	#connect_graph!(F.L)
 	ci.L = F.L
 	return F.perm
 end
