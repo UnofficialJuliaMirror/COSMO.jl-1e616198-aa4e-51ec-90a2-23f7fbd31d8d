@@ -143,8 +143,6 @@ function etree(L)
 	par = zeros(Int64, N)
 	# loop over Vertices of graph
 	for i=1:N
-		value = i
-		# number of i-neighbors with order higher than order of node i
 		par_ = find_parent_direct(L, i)
 		par[i] = par_
 	end
@@ -466,7 +464,7 @@ function find_graph!(ci, rows::Array{Int64, 1}, N::Int64, C::AbstractConvexSet)
 	row_val, col_val = COSMO.row_ind_to_matrix_indices(rows, N, C)
 	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true)#, perm = collect(1:N))
 	# this takes care of the case that QDLDL returns an unconnected adjacency matrix L
-	#connect_graph!(F.L)
+	connect_graph!(F.L)
 	ci.L = F.L
 	return F.perm
 end
