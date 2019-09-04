@@ -186,7 +186,6 @@ mutable struct SparsityPattern
     sntree = SuperNodeTree(L, merge_strategy)
 
     # clique merging
-    @show(sntree.num)
     sntree.num > 1 && merge_cliques!(sntree, merge_strategy)
 
     calculate_block_dimensions!(sntree, merge_strategy)
