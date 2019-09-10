@@ -52,7 +52,7 @@ mutable struct SuperNodeTree
 	merge_log::MergeLog
 	strategy_type::DataType
 	connectivity::SparseMatrixCSC # to store the edges of the merged clique graph if a graph based merge strategy is used
-	function SuperNodeTree(L, merge_strategy)
+	function SuperNodeTree(L, merge_strategy::AbstractMergeStrategy)
 		par = etree(L)
 		child = child_from_par(par)
 		post = post_order(par, child)
@@ -74,7 +74,7 @@ mutable struct SuperNodeTree
 			sep = find_separators(L, snd, snd_par, post)
 			new(snd, snd_par, snd_post, snd_child, post, par, sep, [0], length(snd_post), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
 
-		# If the merge strategy is pairwise, we give up the tree structure and add the seperators to the supernodes
+		# If the merge strategy is clique graph-based, we give up the tree structure and add the seperators to the supernodes
 		# the supernodes then represent the full clique
 		# after the clique merging a new clique tree will be computed before psd completion is performed
 		else
@@ -86,9 +86,9 @@ mutable struct SuperNodeTree
 
 
 	# FIXME: only for debugging purposes
-	function SuperNodeTree(res, par, post, sep)
+	function SuperNodeTree(res, par, post, sep, merge_strategy)
 		child = child_from_par(par)
-  	new(res, par, post, child, [1], [1], sep, [1], length(res), MergeLog())
+  	new(res, par, post, child, [1], [1], sep, [1], length(res), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
 	end
 end
 
@@ -385,7 +385,7 @@ function find_separators(L, snodes::Array{Array{Int64,1},1}, supernode_par::Arra
 
 end
 
-function add_separators!(L, snodes::Array{Array{Int64,1},1}, supernode_par::Array{Int64,1}, post::Array{Int64,1})
+function add_separators!(L::SparseMatrixCSC, snodes::Array{Array{Int64,1},1}, supernode_par::Array{Int64,1}, post::Array{Int64,1})
 	postInv = invert_order(post)
 
 	Nc = length(supernode_par)

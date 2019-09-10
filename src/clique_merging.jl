@@ -37,13 +37,13 @@ struct RelIntersect <: AbstractEdgeScore end
 struct ComplexityScore <: AbstractEdgeScore end
 
 merge_cliques!(t::SuperNodeTree, strategy::NoMerge) = nothing
-function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
-  # strategy = strategy()
 
+
+function _merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
   initialise!(t, strategy)
 
   while !strategy.stop
-    # find two merge candidates
+    # find merge candidates
     cand = traverse(t, strategy)
     ordered_cand = copy(cand)
     # evaluate wether to merge the candidates
@@ -51,8 +51,7 @@ function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
     if do_merge
       # return cand in such a way that the remaining clique comes first
       ordered_cand[:, :] = merge_two_cliques!(t, cand, strategy)
-      # decrement number of cliques in tree
-      t.num -= 1
+
     end
     log_merge!(t, do_merge, ordered_cand)
 
@@ -61,19 +60,28 @@ function merge_cliques!(t::SuperNodeTree, strategy::AbstractMergeStrategy)
     # update strategy information after the merge
     update!(strategy, t, cand, ordered_cand)
   end
+return nothing
+end
 
-  if typeof(strategy) <: AbstractTreeBasedMerge
-    # number of cliques
-    Nc = t.num
-    # the merging creates empty supernodes and seperators, recalculate a post order for the supernodes
-    snd_post = post_order(t.snd_par, t.snd_child, Nc)
-    t.snd_post = snd_post
-    t.connectivity = spzeros(0, 0)
-  else
-    t.snd_post = findall(x -> !isempty(x), t.snd)
-    t.connectivity = strategy.edges
-  end
+function merge_cliques!(t, strategy::AbstractTreeBasedMerge)
+  # call main merge routine
+  _merge_cliques!(t, strategy)
+  # do some merge strategy specific post-processing of the tree
+  Nc = t.num
+  # the merging creates empty supernodes and seperators, recalculate a post order for the supernodes
+  snd_post = post_order(t.snd_par, t.snd_child, Nc)
+  t.snd_post = snd_post
+  t.connectivity = spzeros(0, 0)
+  return nothing
+end
 
+function merge_cliques!(t, strategy::AbstractGraphBasedMerge)
+  # call main merge routine
+  _merge_cliques!(t, strategy)
+  # since for now we have a graph, not a tree a post ordering does not make sense. Therefore just number
+  # the non-empty supernodes in t.snd
+  t.snd_post = findall(x -> !isempty(x), t.snd)
+  t.connectivity = strategy.edges
   return nothing
 end
 
@@ -122,6 +130,9 @@ function merge_child!(t::SuperNodeTree, cand::Array{Int64, 1})
   filter!(x -> x != ch, t.snd_child[p])
   push!(t.snd_child[p], t.snd_child[ch]...)
   t.snd_child[ch] = []
+
+  # decrement number of cliques in tree
+  t.num -= 1
   return [p; ch]
 end
 
@@ -142,6 +153,8 @@ function merge_sibling!(t::SuperNodeTree, cand::Array{Int64, 1})
   push!(t.snd_child[c1], t.snd_child[c2]...)
   t.snd_child[c2] = []
 
+  # decrement number of cliques in tree
+  t.num -= 1
   return [c1; c2]
 end
 
@@ -163,7 +176,7 @@ end
 
 
 """
-TreeTraversalMerge(t_fill = 5, t_size = 5) <: AbstractTreeBasedMerge
+TreeTraversalMerge(t_fill = 8, t_size = 8) <: AbstractTreeBasedMerge
 
 The merge strategy suggested in Sun / Andersen - Decomposition in conic optimization with partially separable structure (2013).
 The initial clique tree is traversed in topological order and cliques are greedily merged to their parent if evaluate() returns true.
@@ -174,10 +187,32 @@ mutable struct TreeTraversalMerge <: AbstractTreeBasedMerge
   t_fill::Int64
   t_size::Int64
 
-  function TreeTraversalMerge(; t_fill = 5, t_size = 5)
+  function TreeTraversalMerge(; t_fill = 8, t_size = 8)
     new(false, 2, t_fill, t_size)
   end
 end
+
+"""
+NakataMerge(zeta = 0.4) <: AbstractTreeBasedMerge
+
+The merge strategy suggested in Nakata - Exploiting sparsity in semidefinite programming via matrix completion II (2001)
+The initial clique tree is traversed in a depth first search and for each clique a conditition is checked if the clique's
+ - any pair of children should be merged (sibling-merge)
+ - the clique should be merged with a child (parent-child merge)
+ - the clique and two children should be merged (3-family merge)
+"""
+mutable struct NakataMerge <: AbstractTreeBasedMerge
+  stop::Bool
+  clique_ind::Int64
+  zeta::Int64
+
+
+  function NakataMerge(; zeta = 0.4)
+    new(false, 1, zeta)
+  end
+end
+
+
 
 
 
@@ -350,6 +385,9 @@ function merge_two_cliques!(t::SuperNodeTree, cand::Array{Int64, 1}, strategy::A
   sort!(t.snd[c_1])
   t.snd[c_2] = []
 
+  # decrement number of cliques in tree
+  t.num -= 1
+
   return [c_1; c_2]
 end
 
@@ -477,21 +515,60 @@ function initialise!(t, strategy::TreeTraversalMerge)
   # start with node that has second highest order
   strategy.clique_ind = length(t.snd) - 1
 end
-# traverse tree in descending topological order and return clique and its parent, root has highest order
+
+function initialise!(t, strategy::NakataMerge)
+  # start with root (clique with highest order)
+  strategy.clique_ind = length(t.snd)
+end
+
+# traverse tree in descending topological order and return parent and clique, root has highest order
 function traverse(t, strategy::TreeTraversalMerge)
   c = t.snd_post[strategy.clique_ind]
   return [t.snd_par[c]; c]
 end
 
+function fill_in(dim_clique_snd::Int64, dim_clique_sep::Int64, dim_par_snd::Int64, dim_par_sep::Int64)
+  dim_par = dim_par_snd + dim_par_sep
+  dim_clique = dim_clique_snd + dim_clique_sep
+  return ((dim_par - dim_clique_sep) * (dim_clique - dim_clique_sep))::Int64
+end
+max_snd_size(dim_clique_snd::Int64, dim_par_snd::Int64) = max(dim_clique_snd, dim_par_snd)
+
+clique_dim(t, c_ind) = length(t.snd[c_ind]), length(t.sep[c_ind])
+
 function evaluate(t, strategy::TreeTraversalMerge, cand)
   strategy.stop && return false
-  c = cand[1]
-  par = cand[2]
-  n_sep = length(t.sep[c])
-  n_sep_par = length(t.sep[par])
-  n_cl = length(t.snd[c]) + n_sep
-  n_cl_par = length(t.snd[par]) + n_sep
-  return (n_cl_par - n_sep) * (n_cl - n_sep) <= strategy.t_fill || max(n_cl - n_sep, n_cl_par - n_sep_par) <= strategy.t_size
+  par = cand[1]
+  c = cand[2]
+  dim_par_snd, dim_par_sep = COSMO.clique_dim(t, par)
+  dim_clique_snd, dim_clique_sep = COSMO.clique_dim(t, c)
+  #println("par: $(par), c: $(c), fill_in :$(fill_in(dim_clique_snd, dim_clique_sep, dim_par_snd, dim_par_sep)), size: $( max_snd_size(dim_clique_snd, dim_par_snd))")
+  return fill_in(dim_clique_snd, dim_clique_sep, dim_par_snd, dim_par_sep) <= strategy.t_fill || max_snd_size(dim_clique_snd, dim_par_snd) <= strategy.t_size
+end
+
+function evaluate(t, strategy::NakataMerge, cand)
+  strategy.stop && return false
+  if length(cand) == 3
+    return _evaluate(t, c1, c2, c3)
+  else
+    return _evaluate(t, c1, c2)
+  end
+end
+
+function _evaluate(t, strategy, c_r, c_s)
+  zeta = strategy.zeta
+  intersecct_dim = intersect_dim(c_r, c_s)
+  c_r_dim = t.snd[c_r] + t.sep[c_r]
+  c_s_dim = t.snd[c_s] + t.sep[c_s]
+  return min(intersect_dim / c_r_dim, intersect_dim / c_s_dim) >= zeta
+end
+
+function _evaluate(t, strategy, c_q, c_r, c_s)
+  zeta = strategy.zeta
+  intersecct_dim = intersect_dim(c_a, c_b)
+  c_a_dim = t.snd[c_a] + t.sep[c_a]
+  c_b_dim = t.snd[c_b] + t.sep[c_b]
+  return min(intersect_dim / c_a_dim, intersect_dim / c_b_dim) >= zeta
 end
 
 
