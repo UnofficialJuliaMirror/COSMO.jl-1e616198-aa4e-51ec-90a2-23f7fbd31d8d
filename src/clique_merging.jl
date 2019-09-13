@@ -34,7 +34,9 @@ abstract type AbstractEdgeScore end
 
 
 struct RelIntersect <: AbstractEdgeScore end
-struct ComplexityScore <: AbstractEdgeScore end
+abstract type AbstractComplexityScore <: AbstractEdgeScore end
+struct ComplexityScore <: AbstractComplexityScore end
+
 
 merge_cliques!(t::SuperNodeTree, strategy::NoMerge) = nothing
 
@@ -273,13 +275,13 @@ function compute_edges!(t, strategy::PairwiseMerge, c_a_ind::Int64)
   end
 end
 
-function edge_metric(c_a::AbstractVector, c_b::AbstractVector, edge_score::ComplexityScore)
+function edge_metric(c_a::AbstractVector, c_b::AbstractVector, edge_score::AbstractComplexityScore)
   n_1 = length(c_a)
   n_2 = length(c_b)
 
   # merged block size
   n_m = union_dim(c_a, c_b)
-  return compute_complexity_savings(n_1, n_2, n_m)
+  return compute_complexity_savings(n_1, n_2, n_m, edge_score)
 end
 
 function edge_metric(c_a::AbstractVector, c_b::AbstractVector, edge_score::RelIntersect)
@@ -360,7 +362,7 @@ function evaluate(t, strategy::PairwiseMerge, cand, edge_score::RelIntersect)
   return do_merge
 end
 
-function evaluate(t, strategy::PairwiseMerge, cand, edge_score::ComplexityScore)
+function evaluate(t, strategy::PairwiseMerge, cand, edge_score::AbstractComplexityScore)
   do_merge = (strategy.edges[cand[1], cand[2]] >= 0)
 
   if !do_merge
@@ -371,7 +373,7 @@ end
 
 # Assuming the complexity of the projection is roughly O(n^3), how many operations are saved by projection the merged cliques
 # instead of the individual cliques
-compute_complexity_savings(n_1::Int64, n_2::Int64, n_m::Int64) = n_1^3 + n_2^3 - n_m^3
+compute_complexity_savings(n_1::Int64, n_2::Int64, n_m::Int64, edge_score::ComplexityScore) = n_1^3 + n_2^3 - n_m^3
 
 # Approximates the number of operations for one projection of all the cliques in the tree
 compute_complexity(t::COSMO.SuperNodeTree) = sum(map(x -> x^3, t.nBlk))
