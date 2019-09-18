@@ -50,8 +50,7 @@ mutable struct SuperNodeTree
 	nBlk::Array{Int64,1} #sizes of submatrizes defined by each clique, sorted by post-ordering, e.g. size of clique with order 3 => nBlk[3]
 	num::Int64 # number of supernodes / cliques in tree
 	merge_log::MergeLog
-	strategy_type::DataType
-	connectivity::SparseMatrixCSC # to store the edges of the merged clique graph if a graph based merge strategy is used
+	strategy::AbstractMergeStrategy
 	function SuperNodeTree(L, merge_strategy::AbstractMergeStrategy)
 		par = etree(L)
 		child = child_from_par(par)
@@ -72,23 +71,23 @@ mutable struct SuperNodeTree
 	 	if typeof(merge_strategy) <: AbstractTreeBasedMerge
 	 		# given the supernodes (clique residuals) find the clique separators
 			sep = find_separators(L, snd, snd_par, post)
-			new(snd, snd_par, snd_post, snd_child, post, par, sep, [0], length(snd_post), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
+			new(snd, snd_par, snd_post, snd_child, post, par, sep, [0], length(snd_post), MergeLog(), merge_strategy)
 
 		# If the merge strategy is clique graph-based, we give up the tree structure and add the seperators to the supernodes
 		# the supernodes then represent the full clique
 		# after the clique merging a new clique tree will be computed before psd completion is performed
 		else
 			add_separators!(L, snd, snd_par, post)
-			@. snd_par = 0
-			new(snd, snd_par, snd_post, snd_child, post, par, [[0]], [0], length(snd_post), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
+			@. snd_par = -1
+			new(snd, snd_par, snd_post, snd_child, post, par, [[0]], [0], length(snd_post), MergeLog(), merge_strategy)
 		end
 	end
 
 
 	# FIXME: only for debugging purposes
-	function SuperNodeTree(res, par, post, sep, merge_strategy)
+	function SuperNodeTree(res, par, snd_post, sep, merge_strategy; post::Array{Int64, 1} = [1])
 		child = child_from_par(par)
-  	new(res, par, post, child, [1], [1], sep, [1], length(res), MergeLog(), typeof(merge_strategy), spzeros(0, 0))
+  	new(res, par, snd_post, child, post, [1], sep, [1], length(res), MergeLog(), merge_strategy)
 	end
 end
 
@@ -215,19 +214,19 @@ function get_nBlk(sntree::SuperNodeTree, ind::Int64)
 end
 
 # return the cliques in a post order (prevents returning empty arrays due to clique merging)
-get_clique(sntree, ind) = get_clique(sntree, ind, sntree.strategy_type())
-function get_clique(sntree::SuperNodeTree, ind::Int64, strategy_type::AbstractTreeBasedMerge)
+get_clique(sntree::SuperNodeTree, ind::Int64) = get_clique(sntree, ind, sntree.strategy)
+function get_clique(sntree::SuperNodeTree, ind::Int64, strategy::AbstractTreeBasedMerge)
 	c = sntree.snd_post[ind]
 	return union(sntree.snd[c], sntree.sep[c])
 end
 
-function get_clique(sntree::SuperNodeTree, ind::Int64, strategy_type::AbstractGraphBasedMerge)
+function get_clique(sntree::SuperNodeTree, ind::Int64, strategy::AbstractGraphBasedMerge)
 	c = sntree.snd_post[ind]
 	return sntree.snd[c]
 end
 
-print_cliques(sntree) = print_cliques(sntree, sntree.strategy_type())
-function print_cliques(sntree::SuperNodeTree, strategy_type::AbstractTreeBasedMerge)
+print_cliques(sntree::SuperNodeTree) = print_cliques(sntree, sntree.strategy)
+function print_cliques(sntree::SuperNodeTree, strategy::AbstractTreeBasedMerge)
 	Nsnd = length(sntree.snd)
 	println("Cliques of Graph:")
 	for iii = 1:Nsnd
@@ -235,7 +234,20 @@ function print_cliques(sntree::SuperNodeTree, strategy_type::AbstractTreeBasedMe
 	end
 end
 
-function print_cliques(sntree::SuperNodeTree, strategy_type::AbstractGraphBasedMerge)
+function print_clique_orders(sntree::SuperNodeTree, strategy::AbstractTreeBasedMerge)
+	Nsnd = length(sntree.snd)
+	println("Cliques of Graph:")
+	for iii = 1:Nsnd
+		post = sntree.post
+		postInv = invert_order(post) #σ-1(v) = j
+
+  	snd_ip = map(x -> postInv[x], sntree.snd[iii])
+  	sep_ip = map(x -> postInv[x], sntree.sep[iii])
+		println("$(iii): res: $(snd_ip), sep: $(sep_ip)")
+	end
+end
+
+function print_cliques(sntree::SuperNodeTree, strategy::AbstractGraphBasedMerge)
 	Nsnd = length(sntree.snd)
 	println("Cliques of Graph:")
 	for iii = 1:Nsnd

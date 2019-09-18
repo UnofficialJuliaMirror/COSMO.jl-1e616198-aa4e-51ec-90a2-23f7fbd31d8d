@@ -83,7 +83,6 @@ function merge_cliques!(t, strategy::AbstractGraphBasedMerge)
   # since for now we have a graph, not a tree a post ordering does not make sense. Therefore just number
   # the non-empty supernodes in t.snd
   t.snd_post = findall(x -> !isempty(x), t.snd)
-  t.connectivity = strategy.edges
   return nothing
 end
 
@@ -171,8 +170,9 @@ mutable struct PairwiseMerge <: AbstractGraphBasedMerge
   stop::Bool
   edges::AbstractMatrix
   edge_score::AbstractEdgeScore
+  recompute_ct_on_demand::Bool # if true only recompute clique tree from clique graph when psd_complete is called, i.e. dual variable has to be completed
   function PairwiseMerge(; edge_score = RelIntersect())
-    new(false, spzeros(Float64, 0, 0), edge_score)
+    new(false, spzeros(Float64, 0, 0), edge_score, true)
   end
 end
 
@@ -451,20 +451,138 @@ function update!(strategy::PairwiseMerge, t, cand, ordered_cand)
 end
 
 
-function clique_intersections!(t::SuperNodeTree)
+function clique_intersections!(E::SparseMatrixCSC, snd::Array{Array{Int64, 1}})
   # iterate over the nonzeros of the connectivity matrix E which represents the clique graph and replace the value by
   # |C_i ∩ C_j|
-  E = t.connectivity
-
+  rows = rowvals(E)
   for col in 1:size(E, 2)
-    for row in nzrange(E, col)
-      E[row, col] = intersect_dim(t.snd[row], t.snd[col])
+    for j in nzrange(E, col)
+      row = rows[j]
+      E[row, col] = intersect_dim(snd[row], snd[col])
     end
   end
   return nothing
 end
 
 
+# Kruskal's algorithm to find a maximum weight spanning tree from the clique intersection graph, E represents the cardinality of the
+# intersection between two cliques
+# Changes the entries in the connectivity matrix E to negative value if an edge between two cliques is included in the max spanning tree
+# modified version of:https://github.com/JuliaGraphs/LightGraphs.jl/blob/master/src/spanningtrees/kruskal.jl
+function kruskal!(E::SparseMatrixCSC)
+
+
+  num_c = size(E, 2)
+  connected_c = DataStructures.IntDisjointSets(num_c)
+
+  I, J, V = findnz(E)
+  # sort the weights and edges from maximum to minimum value
+  p = sortperm(V, rev = true)
+  I = I[p]
+  J = J[p]
+  V = V[p]
+  num_edges_found = 0
+  # iterate through edges (I -- J) with decreasing weight
+  for k = 1:length(V)
+    row = I[k]
+    col = J[k]
+    if !in_same_set(connected_c, row, col)
+      union!(connected_c, row, col)
+      # we indicate an edge in the MST with a positive value in E (all other values are >= 0)
+      E[row, col] = -1.0
+      num_edges_found += 1
+      # break when all cliques are connected in one tree
+      num_edges_found >= num_c - 1 && break
+    end
+  end
+  return nothing
+end
+
+  function assign_children!(snd_par::Array{Int64, 1}, snd_child::Array{Array{Int64, 1}}, c::Int64, edges::SparseMatrixCSC)
+    # determine neighbors
+    neighbors = find_neighbors(edges, c)
+    for n in neighbors
+      if n < c
+        row = c
+        col = n
+      else
+        row = n
+        col = c
+      end
+
+      # conditions that there is a edge in the MST and that n is not the parent of c
+      if edges[row, col] == -1.0 && snd_par[c] != n
+        snd_par[n] = c
+        push!(snd_child[c], n)
+        assign_children!(snd_par, snd_child, n, edges)
+      end
+    end
+    return nothing
+end
+
+
+function determine_parent_cliques!(snd_par::Array{Int64, 1}, snd_child::Array{Array{Int64, 1}}, cliques::Array{Array{Int64, 1}}, post::Array{Int64, 1}, E::SparseMatrixCSC)
+  # vertex with highest order
+  v = post[end]
+  c = 0
+  # find clique that contains that vertex
+  for (k, clique) in enumerate(cliques)
+    if v ∈ clique
+      # set that clique to the root
+      snd_par[k] = 0
+      c = k
+      break
+    end
+  end
+  # recursively assign children to cliques along the MST defined by E
+ assign_children!(snd_par, snd_child, c, E)
+
+  return nothing
+end
+
+function split_cliques!(snd::Array{Array{Int64,1}}, sep::Array{Array{Int64,1}}, snd_par::Array{Int64,1}, snd_post::Array{Int64}, num_cliques::Int64)
+
+  # travese in topological decending order through the clique tree and split the clique in snd and sep
+  for j = 1:1:(num_cliques - 1)
+    c_ind = snd_post[j]
+    par_ind = snd_par[c_ind]
+
+    # find intersection of clique with parent
+    # FIXME: Can be made a lot faster by using non-standard functions
+    sep[c_ind] = intersect(snd[c_ind], snd[par_ind])
+    snd[c_ind] = filter!(x -> x ∉ sep[c_ind], snd[c_ind])
+  end
+  return nothing
+end
+
+recompute_clique_tree(strategy::AbstractTreeBasedMerge) = false
+recompute_clique_tree(strategy::AbstractGraphBasedMerge) = strategy.recompute_ct_on_demand
+
+"""
+    clique_tree_from_graph!(tree)
+
+Given the cliques and edges of a clique graph, this function computes a valid clique tree. This is necessary to perform the psd completion step.
+"""
+function clique_tree_from_graph!(t::SuperNodeTree)
+  # a clique tree is a maximum weight spanning tree of the clique graph where the edge weight is the cardinality of the intersection between two cliques
+  # compute intersection value for each edge in clique graph
+  clique_intersections!(t.strategy.edges, t.snd)
+
+  # find a maximum weight spanning tree of the clique graph using Kruskal's algorithm
+  kruskal!(t.strategy.edges)
+
+  # determine the root clique of the clique tree (the clique that contains the vertex with the highest order)
+  determine_parent_cliques!(t.snd_par, t.snd_child, t.snd, t.post, t.strategy.edges)
+
+  # recompute a postorder
+  t.snd_post = post_order(t.snd_par, t.snd_child)
+
+  # split clique sets back into seperators and supernodes
+  split_cliques!(t.snd, t.sep, t.snd_par, t.snd_post, t.num)
+  return nothing
+end
+
+clique_tree_from_graph!(t::SuperNodeTree, strategy::AbstractTreeBasedMerge) = nothing
 
 # # computes the edge metric for cliques C_a and C_b: (C_a ∩ C_b) / (C_a ∪ C_b) where C_a is the parent of C_b
 # function edge_metric_parent(res, sep, c_a, c_b, edge_score::RelIntersect)

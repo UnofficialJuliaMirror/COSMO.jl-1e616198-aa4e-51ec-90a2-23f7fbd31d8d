@@ -1,7 +1,7 @@
 __precompile__()
 module COSMO
 
-using SparseArrays, LinearAlgebra, SuiteSparse, QDLDL, Pkg
+using SparseArrays, LinearAlgebra, SuiteSparse, QDLDL, Pkg, DataStructures
 
 
 export assemble!, warmStart!, empty_model!

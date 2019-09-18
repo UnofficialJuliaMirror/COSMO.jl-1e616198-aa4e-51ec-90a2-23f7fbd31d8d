@@ -358,32 +358,13 @@ function complete!(μ::AbstractVector, C::PsdConeTriangle{<: Real}, sp_arr::Arra
   return sp_ind + 1
 end
 
-"""
-    clique_tree_from_graph!(tree, ...)
-
-Given the cliques and connectivity of a clique graph, this function computes a valid clique tree. This is necessary to perform the psd completion step.
-"""
-function clique_tree_from_graph!(t::SuperNodeTree, strategy_type::AbstractGraphBasedMerge)
-  # a clique tree is a maximum weight spanning tree of the clique graph where the edge weight is the cardinality of the intersection between two cliques
-  # compute intersection value for each edge
-  clique_intersections!(t)
-
-  # find a maximum weight spanning tree using Kruskal's algorithms
-
-  # determine seperators and residuals of each clique
-
-end
-
-
-
-clique_tree_from_graph!(t::SuperNodeTree, strategy_type::AbstractTreeBasedMerge) = nothing
 
 # positive semidefinite completion (from Vandenberghe - Chordal Graphs..., p. 362)
 # input: A - positive definite completable matrix
 function psd_complete!(A::AbstractMatrix, N::Int64, sntree::SuperNodeTree, p::Array{Int64})
 
-  # if a clique graph based merge strategy was used, recompute a valid clique tree
-  clique_tree_from_graph!(sntree, sntree.strategy_type())
+  # if a clique graph based merge strategy was used for this sparsity pattern, recompute a valid clique tree
+  #recompute_clique_tree(sntree.strategy) && clique_tree_from_graph!(sntree, sntree.strategy)
 
   ip = zeros(Int64, length(p))
   ip[p] = 1:length(p)
@@ -409,7 +390,6 @@ function psd_complete!(A::AbstractMatrix, N::Int64, sntree::SuperNodeTree, p::Ar
     # filter out elements in lower triangular part of column i that are non-zero
     filter!(x -> !in(x, α), η)
 
-    Waa = view(W, α, α)
     Waa = view(W, α, α)
     Wαν = view(W, α, ν)
     Wηα = view(W, η, α)

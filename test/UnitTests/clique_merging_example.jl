@@ -18,13 +18,16 @@ function get_example_tree(strategy)
   supernodes = [snd1, snd2, snd3, snd4, snd5, snd6, snd7, snd8, snd9]
   seperators = [sep1, sep2, sep3, sep4, sep5, sep6, sep7, sep8, sep9]
   parents = [0; 1; 2; 3; 3; 2; 2; 1; 8]
-  post_order = collect(9:-1:1)
-
-  return COSMO.SuperNodeTree(supernodes, parents, post_order, seperators, strategy)
+  snd_post = collect(9:-1:1)
+  post = collect(1:1:17)
+  return COSMO.SuperNodeTree(supernodes, parents, snd_post, seperators, strategy, post = post)
 end
 
 function get_example_graph(strategy)
   t = get_example_tree(strategy)
+  @. t.snd_par = -1
+  @. empty!(t.snd_child)
+
   # add separators to snds
   for (i, snd) in enumerate(t.snd)
     push!(snd, t.sep[i]...)
@@ -42,6 +45,7 @@ function complexity_savings(t, c1, c2)
   return dim_c1^3 + dim_c2^3 - dim_u^3
 end
 
+# Correct solution for adjacency matrix with edge scores
 function get_adjacency_matrix(t)
   rows = [2; 3; 6; 7; 8; 9;
       3; 6; 7; 8;
@@ -57,6 +61,14 @@ function get_adjacency_matrix(t)
   end
   A = sparse(rows, cols, edge_score, 9, 9)
   return A
+end
+
+# correct solution for clique graph with intersection weights
+function get_intersection_matrix()
+  rows = [2; 3; 6; 7; 8; 9; 3; 6; 7; 8; 4; 5; 7; 5; 7; 8; 9]
+  cols = [ones(Int64, 6); 2 * ones(Int64, 4); 3 * ones(Int64, 3); 4; 6*ones(Int64, 2); 8]
+  vals = [2.0; 1; 1; 1; 2; 1; 2; 2; 2; 1; 1; 2; 1; 1; 1; 1; 3]
+  A = sparse(rows, cols, vals, 9, 9)
 end
 
 @testset "Clique merging (CHOMPACK merge strategy)" begin
@@ -109,5 +121,34 @@ t = get_example_graph(strategy)
 COSMO.merge_cliques!(t, strategy)
 # number of merges
 @test t.merge_log.num == 0
+
+
+# recompute clique tree from clique graph
+# compute clique graph edge weights ( |C_i ∩ C_j)
+COSMO.clique_intersections!(t.strategy.edges, t.snd)
+@test t.strategy.edges == get_intersection_matrix()
+# Compute maximum weight spanning tree
+COSMO.kruskal!(t.strategy.edges)
+@test length(findall(x -> x < 0, t.strategy.edges)) == 8
+
+COSMO.determine_parent_cliques!(t.snd_par, t.snd_child, t.snd, t.post, t.strategy.edges)
+# check that tree structure is as expected
+@test t.snd_par == [0; 1; 2; 3; 3; 2; 2; 1; 8]
+t.snd_post = COSMO.post_order(t.snd_par, t.snd_child)
+
+COSMO.split_cliques!(t.snd, t.sep, t.snd_par, t.snd_post, t.num)
+
+
+I = [3; 4; 5; 15;3; 4; 4; 5; 15; 5; 15; 9; 15; 16; 9; 16; 8; 9; 15; 9; 15; 15; 16; 11; 13; 14; 17; 13; 14; 17; 13; 14; 16; 17; 14; 16; 17; 16; 17; 16; 17; 17]
+J = [ones(Int64, 4); 2 * ones(Int64, 2); 3*ones(Int64, 3); 4*ones(Int64, 2); 5*ones(Int64, 3); 6*ones(Int64, 2); 7*ones(Int64, 3); 8*ones(Int64, 2); 9*ones(Int64, 2); 10*ones(Int64, 4); 11*ones(Int64, 3);
+    12*ones(Int64, 4); 13*ones(Int64, 3); 14*ones(Int64, 2); 15*ones(Int64, 2); 16 ]
+
+L = sparse(I, J, ones(length(I)), 17, 17)
+
+strategy = COSMO.PairwiseMerge(edge_score = COSMO.ComplexityScore())
+t = COSMO.SuperNodeTree(L, COSMO.TreeTraversalMerge())
+
+
+
 
 end
