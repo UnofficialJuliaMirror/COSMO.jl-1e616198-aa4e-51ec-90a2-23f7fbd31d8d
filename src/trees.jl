@@ -208,18 +208,27 @@ function get_sep(sntree::SuperNodeTree, ind::Int64)
 		return sntree.sep[sntree.snd_post[ind]]
 end
 
+function get_clique_par(sntree::SuperNodeTree, clique_ind::Int64)
+		return sntree.snd_par[sntree.snd_post[clique_ind]]
+end
 # the block sizes are stored in post order, e.g. if clique 4 (stored in pos 4) has order 2, then nBlk[2] represents the cardinality of clique 4
 function get_nBlk(sntree::SuperNodeTree, ind::Int64)
 		return sntree.nBlk[ind]::Int64
 end
 
-"Returns the number of rows of all the blocks (cliques) represented in the tree after decomposition."
+function get_overlap(sntree::SuperNodeTree, ind::Int64)
+		return length(sntree.sep[sntree.snd_post[ind]])
+end
+
+"Returns the number of rows and the number of overlaps of all the blocks (cliques) represented in the tree after decomposition."
 function get_decomposed_dim(sntree::SuperNodeTree, C::DecomposableCones{<: Real})
 	dim = 0
+	overlaps = 0
 	for iii = 1:num_cliques(sntree)
 		dim += vec_dim(get_nBlk(sntree, iii), C)
+		overlaps += vec_dim(get_overlap(sntree, iii), C)
 	end
-	return dim::Int64
+	return dim::Int64, overlaps::Int64
 end
 
 "Given the side dimension of a PSD cone return the number of stored entries."
@@ -615,7 +624,7 @@ end
 
 function find_graph!(ci, rows::Array{Int64, 1}, N::Int64, C::AbstractConvexSet)
 	row_val, col_val = COSMO.row_ind_to_matrix_indices(rows, N, C)
-	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true)#, perm = collect(1:N))
+	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true, perm = collect(1:N))
 	# this takes care of the case that QDLDL returns an unconnected adjacency matrix L
 	connect_graph!(F.L)
 	ci.L = F.L
