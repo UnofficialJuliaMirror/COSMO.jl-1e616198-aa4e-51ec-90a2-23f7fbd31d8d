@@ -252,6 +252,10 @@ function get_clique(sntree::SuperNodeTree, ind::Int64, strategy::AbstractGraphBa
 	end
 end
 
+function get_clique_by_ind(sntree::SuperNodeTree, ind::Int64)
+	return union(sntree.snd[ind], sntree.sep[ind])
+end
+
 
 function print_cliques(sp; reordered = true)
 	sntree = sp.sntree

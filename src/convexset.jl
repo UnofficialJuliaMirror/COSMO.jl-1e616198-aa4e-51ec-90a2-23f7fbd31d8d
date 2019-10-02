@@ -223,15 +223,17 @@ struct PsdCone{T} <: AbstractConvexCone{T}
 	dim::Int
 	sqrt_dim::Int
   work::PsdBlasWorkspace{T}
-  rows::UnitRange{Int64}
-	function PsdCone{T}(dim::Int) where{T}
+  tree_ind::Int64  # tree number that this cone belongs to
+  clique_ind::Int64
+	function PsdCone{T}(dim::Int, tree_ind::Int64, clique_ind::Int64) where{T}
 		dim >= 0       || throw(DomainError(dim, "dimension must be nonnegative"))
 		iroot = isqrt(dim)
 		iroot^2 == dim || throw(DomainError(dim, "dimension must be a square"))
-		new(dim, iroot,PsdBlasWorkspace{T}(iroot), 0:0)
+		new(dim, iroot, PsdBlasWorkspace{T}(iroot), tree_ind, clique_ind)
 	end
 end
 PsdCone(dim) = PsdCone{DefaultFloat}(dim)
+PsdCone{T}(dim::Int64) where{T} = PsdCone{T}(dim, 0, 0)
 
 
 struct DensePsdCone{T} <: AbstractConvexCone{T}
@@ -311,20 +313,21 @@ mutable struct PsdConeTriangle{T} <: AbstractConvexCone{T}
     sqrt_dim::Int # side length of matrix
     X::Array{T,2}
     work::PsdBlasWorkspace{T}
-    rows::UnitRange{Int64}
+    tree_ind::Int64 # tree number that this cone belongs to
+    clique_ind::Int64
 
-    function PsdConeTriangle{T}(dim::Int) where{T}
+    function PsdConeTriangle{T}(dim::Int, tree_ind::Int64, clique_ind::Int64) where{T}
         dim >= 0       || throw(DomainError(dim, "dimension must be nonnegative"))
         side_dimension = Int(sqrt(0.25 + 2 * dim) - 0.5);
-        new(dim, side_dimension, zeros(side_dimension, side_dimension), PsdBlasWorkspace{T}(side_dimension), 0:0)
+        new(dim, side_dimension, zeros(side_dimension, side_dimension), PsdBlasWorkspace{T}(side_dimension), tree_ind, clique_ind)
 
     end
 end
 PsdConeTriangle(dim) = PsdConeTriangle{DefaultFloat}(dim)
+PsdConeTriangle{T}(dim::Int64) where{T} = PsdConeTriangle{T}(dim, 0, 0)
 
 DecomposableCones{T} = Union{PsdCone{T}, PsdConeTriangle{T}}
 
-mutable struct DensePsdConeTriangle{T} <: AbstractConvexCone{T}
 mutable struct DensePsdConeTriangle{T} <: AbstractConvexCone{T}
     dim::Int #dimension of vector
     sqrt_dim::Int # side length of matrix

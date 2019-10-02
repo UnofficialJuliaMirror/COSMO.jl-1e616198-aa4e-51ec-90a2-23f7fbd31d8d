@@ -48,22 +48,24 @@ function find_sparsity_patterns!(ws)
   for (k, C) in enumerate(ws.p.C.sets)
     psd_row_range = row_ranges[k]
     csp = find_aggregate_sparsity(ws.p.A, ws.p.b, psd_row_range, C)
-    sp_ind = analyse_sparsity_pattern!(ws.ci, csp, ws.p.C.sets, C, k, sp_ind, ws.settings.merge_strategy)
+    sp_ind = analyse_sparsity_pattern!(ws.ci, csp, ws.p.C.sets, C, k, psd_row_range, sp_ind, ws.settings.merge_strategy)
   end
 end
 
-function analyse_sparsity_pattern!(ci, csp, sets, C::DecomposableCones{T}, k, sp_ind, merge_strategy) where {T <: Real}
+analyse_sparsity_pattern!(ci, csp, sets, C::AbstractConvexSet, k, psd_row_range, sp_ind, merge_strategy) = sp_ind
+
+function analyse_sparsity_pattern!(ci, csp, sets, C::DecomposableCones{T}, k, psd_row_range, sp_ind, merge_strategy) where {T <: Real}
   if length(csp) < C.dim
-    return _analyse_sparsity_pattern(ci, csp, sets, C, k, sp_ind, merge_strategy)
+    return _analyse_sparsity_pattern(ci, csp, sets, C, k, psd_row_range, sp_ind, merge_strategy)
   else
    sets[k] = COSMO.DenseEquivalent(C, C.dim)
    return sp_ind
  end
 end
 
-function _analyse_sparsity_pattern(ci, csp, sets, C::Union{PsdCone{<: Real}, PsdConeTriangle{<: Real}}, k, sp_ind, merge_strategy) where {T <: Real}
+function _analyse_sparsity_pattern(ci, csp, sets, C::Union{PsdCone{<: Real}, PsdConeTriangle{<: Real}}, k, psd_row_range, sp_ind, merge_strategy) where {T <: Real}
   ordering = find_graph!(ci, csp, C.sqrt_dim, C)
-  sp = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering, merge_strategy)
+  sp = COSMO.SparsityPattern(ci.L, C.sqrt_dim, ordering, merge_strategy, psd_row_range, k)
   # if after analysis of SparsityPattern & clique merging only one clique remains, don't bother decomposing
   if num_cliques(sp.sntree) == 1
     sets[k] = DenseEquivalent(C, C.dim)
@@ -81,7 +83,6 @@ DenseEquivalent(C::COSMO.PsdConeTriangle{T}, dim::Int64) where {T} = COSMO.Dense
 
 
 
-analyse_sparsity_pattern!(ci, csp, sets, C::AbstractConvexSet, k, sp_ind, merge_strategy) = sp_ind
 
 function nz_rows(a::SparseMatrixCSC, ind::UnitRange{Int64}, DROP_ZEROS_FLAG::Bool)
   DROP_ZEROS_FLAG && dropzeros!(a)
@@ -141,6 +142,9 @@ function mat_to_svec_ind(i::Int64, j::Int64)
     return div((i - 1) * i, 2) + j
   end
 end
+
+vectorized_ind(i::Int64, j::Int64, m::Int64, C::PsdCone{T}) where {T} = mat_to_vec_ind(i, j, m)
+vectorized_ind(i::Int64, j::Int64, m::Int64, C::PsdConeTriangle{T}) where {T} = mat_to_svec_ind(i, j)
 
 function svec_to_mat_ind(k::Int64)
   j = isqrt(2 * k)
@@ -266,7 +270,6 @@ function find_A_dimension(n_original::Int64, sets, sp_arr)
     dim, overlaps, sp_arr_ind = decomposed_dim(C, sp_arr, sp_arr_ind)
     num_rows += dim
     num_overlapping_entries += overlaps
-
   end
   return num_rows::Int64, (num_cols + num_overlapping_entries)::Int64, num_overlapping_entries
 end
@@ -350,8 +353,8 @@ end
 
 
 function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVector, b_I, b_V, C_new,
-  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, col_end::Int64, set_ind,
-  sntree, ordering, C::AbstractConvexSet)
+  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, col_end::Int64, set_ind::Int64, sp_ind::Int64,
+  sp_arr, C::AbstractConvexSet, k::Int64, cone_map::Dict{Int64, Int64})
   m, n = size(A0)
 
   for col = 1:n
@@ -373,18 +376,21 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
   end
   row_start += C.dim
   C_new[set_ind] = C
-  return row_start, col_end, set_ind + 1
+  cone_map[set_ind] = k
+  return row_start, col_end, set_ind + 1, sp_ind
 end
 
 function clique_rows_map(row_start::Int64, sntree::SuperNodeTree, C::DecomposableCones{<:Real})
-
-  rows = Array{UnitRange{Int64}}(undef,  num_cliques(sntree))
-  for iii = num_cliques(sntree):-1:1
+  Nc = num_cliques(sntree)
+  rows = Array{UnitRange{Int64}}(undef,  Nc)
+  ind = zeros(Int64, Nc)
+  for iii = Nc:-1:1
     num_rows = COSMO.get_blk_length(COSMO.get_nBlk(sntree, iii), C)
     rows[iii] = row_start:row_start+num_rows-1
+    ind[iii] = sntree.snd_post[iii]
     row_start += num_rows
   end
-  return Dict(collect(1:1:num_cliques(sntree)) .=> rows)
+  return Dict(ind .=> rows)
 end
 
 function parent_block_indices(par_clique::Array{Int64, 1}, i::Int64, j::Int64)
@@ -394,10 +400,13 @@ function parent_block_indices(par_clique::Array{Int64, 1}, i::Int64, j::Int64)
 end
 
 function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVector, b_I, b_V, C_new,
-  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, col_end::Int64, set_ind::Int64,
-  sntree, ordering,  C::DecomposableCones{<: Real})
+  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, col_end::Int64, set_ind::Int64, sp_ind::Int64,
+  sp_arr,  C::DecomposableCones{<: Real}, k::Int64, cone_map::Dict{Int64, Int64})
+
+  sntree = sp_arr[sp_ind].sntree
+  ordering = sp_arr[sp_ind].ordering
+
   m, n = size(A0)
-  #ordering = sparsity_pattern.ordering
   new_row = copy(row_start)
 
   # determine the row ranges for each of the subblocks
@@ -406,29 +415,24 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
   # loop over cliques in descending topological order
   for iii = num_cliques(sntree):-1:1
 
-    snd = map(v -> ordering[v], get_snd(sntree, iii))
     sep = map(v -> ordering[v], get_sep(sntree, iii))
     clique = map(v -> ordering[v], get_clique(sntree, iii))
-    sort!(snd)
-    sort!(sep)
     sort!(clique)
     block_length = get_blk_length(get_nBlk(sntree, iii), C)
-
 
     if iii == num_cliques(sntree)
       par_clique = Int64[]
     else
       par_ind = COSMO.get_clique_par(sntree, iii)
       par_rows = clique_to_rows[par_ind]
-      par_clique = map(v -> ordering[v], get_clique(sntree, par_ind))
+      par_clique = map(v -> ordering[v], get_clique_by_ind(sntree, par_ind))
       sort!(par_clique)
     end
-
 
     for col = 1:n
       counter = 0
       for j in clique, i in clique
-        if i <= j
+        if isa(C, PsdCone) || i <= j
           if i ∈ sep && j ∈ sep
             if col == 1
               push!(A_I, new_row + counter)
@@ -440,12 +444,12 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
           else
             push!(A_I, new_row + counter)
             push!(A_J, col)
-            push!(A_V, A0[row_start + COSMO.mat_to_svec_ind(i, j) - 1, col])
+            push!(A_V, A0[row_start + COSMO.vectorized_ind(i, j, C.sqrt_dim, C) - 1, col])
 
             # also assemble vector b
             if col == 1
               push!(b_I, new_row + counter)
-              push!(b_V, b0[row_start + COSMO.mat_to_svec_ind(i, j) - 1])
+              push!(b_V, b0[row_start + COSMO.vectorized_ind(i, j, C.sqrt_dim, C) - 1])
             end
           end
           counter += 1
@@ -455,13 +459,14 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
 
      # create and add new cone for subblock
     num_rows = get_blk_rows(block_length, C)
-    C_new[set_ind] = typeof(C)(num_rows)
-    C_new[set_ind].rows = new_row:new_row + block_length - 1
+    C_new[set_ind] = typeof(C)(num_rows, sp_ind, iii)
+    cone_map[set_ind] = k
+
     set_ind += 1
     new_row += block_length
   end
   row_start = new_row
-  return row_start, col_end, set_ind
+  return row_start, col_end, set_ind, sp_ind + 1
 end
 
 
@@ -490,11 +495,11 @@ function augment_clique_based!(ws)
   col_end = size(A, 2) + 1
   sp_ind = 1
   set_ind = 1
-  for C in cones
-    row_start, col_end, set_ind = COSMO.add_entries!(Aa_I, Aa_J, Aa_V, b_I, b_V, C_new, A, sparse(b), row_start, col_end, set_ind, sp_arr[sp_ind].sntree, sp_arr[sp_ind].ordering, C)
-    isa(C, COSMO.DecomposableCones) && (sp_ind += 1)
+  for (k, C) in enumerate(cones)
+    row_start, col_end, set_ind, sp_ind = COSMO.add_entries!(Aa_I, Aa_J, Aa_V, b_I, b_V, C_new, A, sparse(b), row_start, col_end, set_ind, sp_ind, sp_arr, C, k, ws.ci.cone_map)
   end
 
+  #@show(Aa_I, Aa_J, Aa_V)
   Aa = sparse(Aa_I, Aa_J, Aa_V, mA, nA)
   dropzeros!(Aa)
   ba = Vector(sparsevec(b_I, b_V, mA))
@@ -511,36 +516,52 @@ function augment_clique_based!(ws)
   return nothing
 end
 
+function add_sub_blocks!(s::SplitVector, s_decomp::SplitVector, μ::AbstractVector, μ_decomp::AbstractVector, ci::ChordalInfo, C::CompositeConvexSet, C0::CompositeConvexSet, cone_map::Dict{Int64, Int64})
+  sp_arr = ci.sp_arr
+  row_start = 1 # the row pointer in the decomposed problem
+  row_ranges = get_set_indices(C0.sets) # the row ranges of the same cone (or parent cone) in the original problem
+  original_set_ind = 1
 
-function add_sub_blocks!(s, s_decomp::SplitVector, sp_arr, C)
-
-  sp_ind = 1
-  row_start = 1
-  for C in C.sets
-    row_start, sp_ind = add_blocks!(s, row_start, sp_ind, sp_arr, s_decomp, C)
+  # iterate over all the cones of the decomposed problems and add the entries into the correct positions of the original problem
+  for (k, C) in enumerate(C.sets)
+    row_start = add_blocks!(s, μ, row_start, sp_arr, s_decomp, μ_decomp, C)
+    isa(C, DecomposableCones) &&
   end
   return nothing
 end
 
+function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, μ_decomp::AbstractVector, C::AbstractConvexSet)
 
-function add_blocks!(s::SplitVector, row_start::Int64, sp_ind::Int64, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, C::AbstractConvexSet)
-  @. s.data[row_start:row_start + C_dim - 1] = s_decomp.data[row_start:row_start + C_dim - 1]
-  return row_start + C.dim, sp_ind
+  @. s.data[row_start:row_start + C.dim - 1] = s_decomp.data[row_start:row_start + C.dim - 1]
+  @. μ[row_start:row_start + C.dim - 1] = μ_decomp[row_start:row_start + C.dim - 1]
+  return row_start + C.dim
 end
 
-function add_blocks!(s::SplitVector, row_start::Int64, sp_ind::Int64, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, C::DecomposableCones{ <: Real})
-  sntree = sp_arr[sp_ind].sntree
-  ordering = sp_arr[sp_ind].ordering
-
-  for iii = num(cliques):-1:1
-    # where are they stored and where shall they go
-    # they should go to the
+function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, μ_decomp::AbstractVector, C::DecomposableCones{ <: Real})
+  # load the appropriate sparsity_pattern
+  sp = sp_arr[C.tree_ind]
+  sntree = sp.sntree
+  ordering = sp.ordering
+  row_start = sp.row_range.start
+  N = length(ordering)
+  clique = map(v -> ordering[v], get_clique(sntree, C.clique_ind))
+  sort!(clique)
+  counter = 0
+  for j in clique, i in clique
+    if isa(C, PsdCone) || i <= j
+      @show(i, j , C.sqrt_dim)
+      offset = COSMO.vectorized_ind(i, j, N, C) - 1
+      @show(typeof(C), row_start, offset, counter)
+      s.data[row_start + offset] += s_decomp.data[row_start + counter]
+      μ[row_start + offset] += μ_decomp[row_start + counter]
+      counter += 1
+    end
   end
-  return row_start + C.dim, sp_ind + 1
+  #@show(typeof(C), sp.row_range)
+  return sp.row_range.stop + 1
 end
 
 function reverse_decomposition!(ws::COSMO.Workspace, settings::COSMO.Settings)
-
 
   mO = ws.ci.originalM
   nO = ws.ci.originalN
@@ -550,8 +571,7 @@ function reverse_decomposition!(ws::COSMO.Workspace, settings::COSMO.Settings)
 
   if settings.colo_transformation
     # reassemble the original variables s and μ
-    add_sub_blocks!(vars.s, ws.vars.s, ws.ci)
-
+    add_sub_blocks!(vars.s, ws.vars.s, vars.μ, ws.vars.μ, ws.ci, ws.p.C, ws.ci.originalC, ws.ci.cone_map)
   else
     H = ws.ci.H
     vars.s  .= SplitVector{Float64}(H * ws.vars.s[mO + 1:end], ws.ci.originalC)

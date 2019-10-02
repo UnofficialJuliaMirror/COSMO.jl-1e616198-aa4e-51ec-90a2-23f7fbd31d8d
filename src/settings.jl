@@ -103,7 +103,7 @@ mutable struct Settings
 		obj_true = NaN,
 		obj_true_tol = 1e-3,
 		merge_strategy = PairwiseMerge,
-		colo_transformation = false
+		colo_transformation = true
 		)
 	if !isa(kkt_solver, OptionsFactory)
 		kkt_solver = with_options(kkt_solver)
