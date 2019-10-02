@@ -192,11 +192,9 @@ function decompose!(H_I::Vector{Int64}, C_new, set_ind::Int64, C::COSMO.Abstract
   return set_ind + 1, sp_ind, entry
 end
 
-get_blk_length(nBlk::Int64, C::COSMO.PsdCone{Float64}) = nBlk
-get_blk_length(nBlk::Int64, C::COSMO.PsdConeTriangle{Float64}) = div((nBlk + 1) * nBlk, 2)
-
-get_blk_rows(d::Int64, C::COSMO.PsdCone{Float64}) = d^2
-get_blk_rows(d::Int64, C::COSMO.PsdConeTriangle{Float64}) = d
+# for a clique with nBlk entries, return the number of entries in the corresponding matrix
+get_blk_rows(nBlk::Int64, C::COSMO.PsdCone{T}) where {T} = Base.power_by_squaring(nBlk, 2)
+get_blk_rows(nBlk::Int64, C::COSMO.PsdConeTriangle{T}) where {T} = div((nBlk + 1) * nBlk, 2)
 
 function decompose!(H_I::Vector{Int64}, C_new, set_ind::Int64,  C::DecomposableCones{ <: Real}, entry::Int64, row_start::Int64, sp_arr::Array{SparsityPattern}, sp_ind::Int64)
   sparsity_pattern = sp_arr[sp_ind]
@@ -205,17 +203,15 @@ function decompose!(H_I::Vector{Int64}, C_new, set_ind::Int64,  C::DecomposableC
   original_size = C.sqrt_dim
 
   for iii = 1:num_cliques(sntree)
-    # new stacked size
-    block_length = get_blk_length(get_nBlk(sntree, iii), C)
 
     c = COSMO.get_clique(sntree, iii)
     # the graph and tree algorithms determined the cliques vertices of an AMD-permuted matrix. Since the location of the data hasn't changed in reality, we have to map the clique vertices back
     c = map(v -> sparsity_pattern.ordering[v], c)
     sort!(c)
-    entry = COSMO.add_subblock_map!(H_I, c, block_length, original_size, entry, row_start, C)
+    entry = COSMO.add_subblock_map!(H_I, c, original_size, entry, row_start, C)
 
     # create and add new cone for subblock
-    num_rows = get_blk_rows(block_length, C)
+    num_rows = get_blk_rows(get_nBlk(sntree, iii), C)
     C_new[set_ind] = typeof(C)(num_rows)
     set_ind += 1
   end
@@ -225,7 +221,7 @@ end
 
 
 # fills the corresponding entries of H for clique c
-function add_subblock_map!(H_I::Vector{Int64}, clique_vertices::Array{Int64}, block_size::Int64, original_size::Int64, entry::Int64, row_start::Int64, ::PsdCone{<: Real})
+function add_subblock_map!(H_I::Vector{Int64}, clique_vertices::Array{Int64}, original_size::Int64, entry::Int64, row_start::Int64, ::PsdCone{<: Real})
   for vj in clique_vertices
     for vi in clique_vertices
       row = mat_to_vec_ind(vi, vj, original_size)
@@ -236,7 +232,7 @@ function add_subblock_map!(H_I::Vector{Int64}, clique_vertices::Array{Int64}, bl
   return entry::Int64
 end
 
-function add_subblock_map!(H_I::Vector{Int64}, clique_vertices::Array{Int64}, block_dim::Int64, original_size::Int64, entry::Int64,  row_start::Int64, ::PsdConeTriangle{<: Real})
+function add_subblock_map!(H_I::Vector{Int64}, clique_vertices::Array{Int64}, original_size::Int64, entry::Int64,  row_start::Int64, ::PsdConeTriangle{<: Real})
   for vj in clique_vertices
     for vi in clique_vertices
       if vi <= vj
@@ -385,7 +381,7 @@ function clique_rows_map(row_start::Int64, sntree::SuperNodeTree, C::Decomposabl
   rows = Array{UnitRange{Int64}}(undef,  Nc)
   ind = zeros(Int64, Nc)
   for iii = Nc:-1:1
-    num_rows = COSMO.get_blk_length(COSMO.get_nBlk(sntree, iii), C)
+    num_rows = COSMO.get_blk_rows(COSMO.get_nBlk(sntree, iii), C)
     rows[iii] = row_start:row_start+num_rows-1
     ind[iii] = sntree.snd_post[iii]
     row_start += num_rows
@@ -418,7 +414,6 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
     sep = map(v -> ordering[v], get_sep(sntree, iii))
     clique = map(v -> ordering[v], get_clique(sntree, iii))
     sort!(clique)
-    block_length = get_blk_length(get_nBlk(sntree, iii), C)
 
     if iii == num_cliques(sntree)
       par_clique = Int64[]
@@ -458,12 +453,12 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
     end
 
      # create and add new cone for subblock
-    num_rows = get_blk_rows(block_length, C)
+    num_rows = get_blk_rows(get_nBlk(sntree, iii), C)
     C_new[set_ind] = typeof(C)(num_rows, sp_ind, iii)
     cone_map[set_ind] = k
 
     set_ind += 1
-    new_row += block_length
+    new_row += num_rows
   end
   row_start = new_row
   return row_start, col_end, set_ind, sp_ind + 1
@@ -499,11 +494,9 @@ function augment_clique_based!(ws)
     row_start, col_end, set_ind, sp_ind = COSMO.add_entries!(Aa_I, Aa_J, Aa_V, b_I, b_V, C_new, A, sparse(b), row_start, col_end, set_ind, sp_ind, sp_arr, C, k, ws.ci.cone_map)
   end
 
-  #@show(Aa_I, Aa_J, Aa_V)
   Aa = sparse(Aa_I, Aa_J, Aa_V, mA, nA)
   dropzeros!(Aa)
   ba = Vector(sparsevec(b_I, b_V, mA))
-  #dropzeros!(ba)
 
   ws.p.P = blockdiag(P, spzeros(num_overlapping_entries, num_overlapping_entries))
   ws.p.q = vec([q; zeros(num_overlapping_entries)])
@@ -519,30 +512,29 @@ end
 function add_sub_blocks!(s::SplitVector, s_decomp::SplitVector, μ::AbstractVector, μ_decomp::AbstractVector, ci::ChordalInfo, C::CompositeConvexSet, C0::CompositeConvexSet, cone_map::Dict{Int64, Int64})
   sp_arr = ci.sp_arr
   row_start = 1 # the row pointer in the decomposed problem
-  row_ranges = get_set_indices(C0.sets) # the row ranges of the same cone (or parent cone) in the original problem
-  original_set_ind = 1
+  row_ranges = get_set_indices(C0.sets) # the row ranges of the same cone (or "parent" cone) in the original problem
 
   # iterate over all the cones of the decomposed problems and add the entries into the correct positions of the original problem
   for (k, C) in enumerate(C.sets)
-    row_start = add_blocks!(s, μ, row_start, sp_arr, s_decomp, μ_decomp, C)
-    isa(C, DecomposableCones) &&
+    row_range = row_ranges[cone_map[k]]
+    row_start = add_blocks!(s, μ, row_start, row_range, sp_arr, s_decomp, μ_decomp, C)
   end
   return nothing
 end
 
-function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, μ_decomp::AbstractVector, C::AbstractConvexSet)
+function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, row_range::UnitRange{Int64}, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, μ_decomp::AbstractVector, C::AbstractConvexSet)
 
-  @. s.data[row_start:row_start + C.dim - 1] = s_decomp.data[row_start:row_start + C.dim - 1]
-  @. μ[row_start:row_start + C.dim - 1] = μ_decomp[row_start:row_start + C.dim - 1]
+  @. s.data[row_range] = s_decomp.data[row_start:row_start + C.dim - 1]
+  @. μ[row_range] = μ_decomp[row_start:row_start + C.dim - 1]
   return row_start + C.dim
 end
 
-function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, μ_decomp::AbstractVector, C::DecomposableCones{ <: Real})
+function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, row_range::UnitRange{Int64}, sp_arr::Array{SparsityPattern, 1}, s_decomp::SplitVector, μ_decomp::AbstractVector, C::DecomposableCones{ <: Real})
   # load the appropriate sparsity_pattern
   sp = sp_arr[C.tree_ind]
   sntree = sp.sntree
   ordering = sp.ordering
-  row_start = sp.row_range.start
+  #row_start = sp.row_range.start
   N = length(ordering)
   clique = map(v -> ordering[v], get_clique(sntree, C.clique_ind))
   sort!(clique)
@@ -552,13 +544,15 @@ function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, sp_ar
       @show(i, j , C.sqrt_dim)
       offset = COSMO.vectorized_ind(i, j, N, C) - 1
       @show(typeof(C), row_start, offset, counter)
-      s.data[row_start + offset] += s_decomp.data[row_start + counter]
-      μ[row_start + offset] += μ_decomp[row_start + counter]
+      s.data[row_range.start + offset] += s_decomp.data[row_start + counter]
+      μ[row_range.start + offset] += μ_decomp[row_start + counter]
       counter += 1
     end
+
   end
-  #@show(typeof(C), sp.row_range)
-  return sp.row_range.stop + 1
+  row_start += get_blk_rows(length(clique), C)
+
+  return row_start
 end
 
 function reverse_decomposition!(ws::COSMO.Workspace, settings::COSMO.Settings)
