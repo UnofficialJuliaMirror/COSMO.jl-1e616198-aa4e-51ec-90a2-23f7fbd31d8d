@@ -259,14 +259,14 @@ end
 
 function print_cliques(sp; reordered = true)
 	sntree = sp.sntree
-	reverse_ordering = sp.reverse_ordering
+	ordering = sp.ordering
 	Nsnd = length(sntree.snd)
 	println("Cliques of Graph:")
 	println("Reordered = $(reordered)")
 	for iii = 1:Nsnd
 			if !reordered
-				snd = map(x-> reverse_ordering[x], sntree.snd[iii])
-				sep = map(x-> reverse_ordering[x], sntree.sep[iii])
+				snd = map(x-> ordering[x], sntree.snd[iii])
+				sep = map(x-> ordering[x], sntree.sep[iii])
 			else
 				snd = sntree.snd[iii]
 				sep = sntree.sep[iii]
@@ -628,7 +628,7 @@ end
 
 function find_graph!(ci, rows::Array{Int64, 1}, N::Int64, C::AbstractConvexSet)
 	row_val, col_val = COSMO.row_ind_to_matrix_indices(rows, N, C)
-	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true, perm = collect(1:N))
+	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true)#, perm = collect(1:N))
 	# this takes care of the case that QDLDL returns an unconnected adjacency matrix L
 	connect_graph!(F.L)
 	ci.L = F.L

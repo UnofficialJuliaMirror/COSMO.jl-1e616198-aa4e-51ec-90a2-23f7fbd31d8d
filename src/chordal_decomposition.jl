@@ -349,14 +349,16 @@ end
 
 
 function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVector, b_I, b_V, C_new,
-  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, col_end::Int64, set_ind::Int64, sp_ind::Int64,
+  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, row_range::UnitRange{Int64}, col_end::Int64, set_ind::Int64, sp_ind::Int64,
   sp_arr, C::AbstractConvexSet, k::Int64, cone_map::Dict{Int64, Int64})
   m, n = size(A0)
-
+  offset = row_start - row_range.start
   for col = 1:n
-    rows, erange = COSMO.get_rows(A0, col, row_start:row_start + C.dim - 1)
+    rows, erange = COSMO.get_rows(A0, col, row_range)
     if rows != nothing
       # only look at the rows corresponding to the cone
+      @. rows += offset
+     # @show(erange)
       push!(A_I, rows...)
       for j = 1:length(rows)
         push!(A_J, col)
@@ -365,9 +367,11 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
     end
   end
 
-  erange = COSMO.get_rows(b0, row_start:row_start + C.dim - 1)
+  erange = COSMO.get_rows(b0, row_range)
   if erange != nothing
-    push!(b_I, view(b0.nzind, erange)...)
+    rows = b0.nzind[erange]
+    @. rows += offset
+    push!(b_I, rows...)
     push!(b_V, view(b0.nzval, erange)...)
   end
   row_start += C.dim
@@ -396,7 +400,7 @@ function parent_block_indices(par_clique::Array{Int64, 1}, i::Int64, j::Int64)
 end
 
 function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVector, b_I, b_V, C_new,
-  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, col_end::Int64, set_ind::Int64, sp_ind::Int64,
+  A0::SparseMatrixCSC, b0::AbstractVector, row_start::Int64, row_range::UnitRange{Int64}, col_end::Int64, set_ind::Int64, sp_ind::Int64,
   sp_arr,  C::DecomposableCones{<: Real}, k::Int64, cone_map::Dict{Int64, Int64})
 
   sntree = sp_arr[sp_ind].sntree
@@ -407,7 +411,6 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
 
   # determine the row ranges for each of the subblocks
   clique_to_rows = COSMO.clique_rows_map(row_start, sntree, C)
-
   # loop over cliques in descending topological order
   for iii = num_cliques(sntree):-1:1
 
@@ -437,14 +440,15 @@ function add_entries!(A_I::AbstractVector, A_J::AbstractVector, A_V::AbstractVec
               push!(A_V, 1.0, -1.0)
             end
           else
+            @show(iii, i, j)
             push!(A_I, new_row + counter)
             push!(A_J, col)
-            push!(A_V, A0[row_start + COSMO.vectorized_ind(i, j, C.sqrt_dim, C) - 1, col])
+            push!(A_V, A0[row_range.start + COSMO.vectorized_ind(i, j, C.sqrt_dim, C) - 1, col])
 
             # also assemble vector b
             if col == 1
               push!(b_I, new_row + counter)
-              push!(b_V, b0[row_start + COSMO.vectorized_ind(i, j, C.sqrt_dim, C) - 1])
+              push!(b_V, b0[row_range.start + COSMO.vectorized_ind(i, j, C.sqrt_dim, C) - 1])
             end
           end
           counter += 1
@@ -475,7 +479,7 @@ function augment_clique_based!(ws)
 
 
   mA, nA, num_overlapping_entries = find_A_dimension(ws.p.model_size[2], ws.p.C.sets, ws.ci.sp_arr)
-
+  @show(mA, nA)
   # find number of decomposed and total sets and allocate structure for new compositve convex set
   num_total, num_new_psd_cones = COSMO.num_cone_decomposition(ws)
 
@@ -486,17 +490,21 @@ function augment_clique_based!(ws)
   b_V = Float64[]
   C_new = Array{COSMO.AbstractConvexSet{Float64}}(undef, num_total - 1)
 
-  row_start = 1
+  row_ranges = get_set_indices(cones) # the row ranges of each cone in the original problem
+  row_start = 1 # a continuously updated pointer to the first row of a new cone
   col_end = size(A, 2) + 1
   sp_ind = 1
   set_ind = 1
   for (k, C) in enumerate(cones)
-    row_start, col_end, set_ind, sp_ind = COSMO.add_entries!(Aa_I, Aa_J, Aa_V, b_I, b_V, C_new, A, sparse(b), row_start, col_end, set_ind, sp_ind, sp_arr, C, k, ws.ci.cone_map)
+    row_range = row_ranges[k]
+    @show(k, typeof(C), row_start, row_range)
+    row_start, col_end, set_ind, sp_ind = COSMO.add_entries!(Aa_I, Aa_J, Aa_V, b_I, b_V, C_new, A, sparse(b), row_start, row_range, col_end, set_ind, sp_ind, sp_arr, C, k, ws.ci.cone_map)
   end
 
   Aa = sparse(Aa_I, Aa_J, Aa_V, mA, nA)
   dropzeros!(Aa)
   ba = Vector(sparsevec(b_I, b_V, mA))
+  @show(Aa, size(Aa))
 
   ws.p.P = blockdiag(P, spzeros(num_overlapping_entries, num_overlapping_entries))
   ws.p.q = vec([q; zeros(num_overlapping_entries)])
@@ -541,9 +549,7 @@ function add_blocks!(s::SplitVector, μ::AbstractVector, row_start::Int64, row_r
   counter = 0
   for j in clique, i in clique
     if isa(C, PsdCone) || i <= j
-      @show(i, j , C.sqrt_dim)
       offset = COSMO.vectorized_ind(i, j, N, C) - 1
-      @show(typeof(C), row_start, offset, counter)
       s.data[row_range.start + offset] += s_decomp.data[row_start + counter]
       μ[row_range.start + offset] += μ_decomp[row_start + counter]
       counter += 1
@@ -562,6 +568,8 @@ function reverse_decomposition!(ws::COSMO.Workspace, settings::COSMO.Settings)
 
   vars = Variables{Float64}(mO, nO, ws.ci.originalC)
   vars.x .= ws.vars.x[1:nO]
+
+  @show(ws.vars.s)
 
   if settings.colo_transformation
     # reassemble the original variables s and μ
