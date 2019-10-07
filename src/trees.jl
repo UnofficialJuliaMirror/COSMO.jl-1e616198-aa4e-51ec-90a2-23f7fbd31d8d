@@ -83,6 +83,14 @@ mutable struct SuperNodeTree
 		end
 	end
 
+	function COSMO.SuperNodeTree(cliques::Array{Array{Int64,1},1}, N::Int64)
+    snd_child = [Int64[] for i = 1:N]
+    snd_par = -1 * ones(length(cliques))
+    sep = [Int64[] for i = 1:length(cliques)]
+    snd_post = zeros(length(cliques))
+    new(cliques, snd_par, snd_post, snd_child, collect(1:N), [0], sep, [1], length(cliques), COSMO.MergeLog(), COSMO.PairwiseMerge())
+	end
+
 
 	# FIXME: only for debugging purposes
 	function SuperNodeTree(res, par, snd_post, sep, merge_strategy; post::Array{Int64, 1} = [1])
@@ -628,12 +636,30 @@ end
 
 function find_graph!(ci, rows::Array{Int64, 1}, N::Int64, C::AbstractConvexSet)
 	row_val, col_val = COSMO.row_ind_to_matrix_indices(rows, N, C)
-	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val))), logical = true)#, perm = collect(1:N))
+	F = QDLDL.qdldl(sparse(row_val, col_val, ones(length(row_val)), N, N), logical = true)#, perm = collect(1:N))
 	# this takes care of the case that QDLDL returns an unconnected adjacency matrix L
+	nz_ind_map = get_nz_ind_map(rows, N)
 	connect_graph!(F.L)
 	ci.L = F.L
-	return F.perm
+	return F.perm, nz_ind_map
 end
+
+" A sparse vector that maps the index of svec(i, j) = k to the actual index of where that entry is stored in A.rowval."
+function get_nz_ind_map(rows::Array{Int64, 1}, N::Int64)
+	d = div(N * (N+1), 2)
+	nzind = rows
+	nzval = collect(1:length(rows))
+
+	return SparseArrays._sparsevector!(nzind, nzval, d)
+end
+
+# function get_nz_ind_map(sntree::SuperNodeTree)
+# 	n =
+# 	nzind = rows
+# 	nzval = collect(1:length(rows))
+
+# 	return SparseArrays._sparsevector!(nzind, nzval, d)
+# end
 
 
 # given an array [rows] that represent the nonzero entries of a vectorized NxN matrix,

@@ -176,9 +176,10 @@ mutable struct SparsityPattern
   reverse_ordering::Array{Int64}
   row_range::UnitRange{Int64} # the starting row of the psd cone in the original problem
   cone_ind::Int64 # this is the ind of the original psd cone in ws.p.C that is decomposed
+  nz_ind_map::SparseVector{Int64, Int64} # maps a matrix entry k = svec(i, j) to the location of the entry in the sparse data structure
 
   # constructor for sparsity pattern
-  function SparsityPattern(L::SparseMatrixCSC, N::Int64, ordering::Array{Int64, 1}, merge_strategy, row_range::UnitRange{Int64}, cone_ind::Int64)
+  function SparsityPattern(L::SparseMatrixCSC, N::Int64, ordering::Array{Int64, 1}, merge_strategy, row_range::UnitRange{Int64}, cone_ind::Int64, nz_ind_map::SparseVector{Int64, Int64})
 
     merge_strategy = merge_strategy()
     sntree = SuperNodeTree(L, merge_strategy)
@@ -193,7 +194,12 @@ mutable struct SparsityPattern
     # for each clique determine the number of entries of the block represented by that clique
     calculate_block_dimensions!(sntree)#, merge_strategy)
 
-    return new(sntree, ordering, invperm(ordering), row_range, cone_ind)
+    return new(sntree, ordering, invperm(ordering), row_range, cone_ind, nz_ind_map)
+  end
+
+  # For debugging
+  function SparsityPattern(sntree::SuperNodeTree, ordering::Array{Int64}, reverse_ordering::Array{Int64}, row_range::UnitRange{Int64}, cone_ind::Int64)
+    return new(sntree, ordering, reverse_ordering, row_range, cone_ind)
   end
 end
 
