@@ -349,31 +349,35 @@ end
 
 
 function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{COSMO.AbstractConvexSet{Float64}, 1}, row_ptr::Int64, A0::SparseMatrixCSC, b0::SparseVector, row_range::UnitRange{Int64}, overlap_ptr::Int64, set_ind::Int64, sp_ind::Int64,
-  sp_arr::Array{SparsityPattern, 1}, C::AbstractConvexSet, k::Int64, col::Int64, cone_map::Dict{Int64, Int64})
+  sp_arr::Array{SparsityPattern, 1}, C::AbstractConvexSet, k::Int64, cone_map::Dict{Int64, Int64})
+
+  m, n = size(A0)
 
   # let's handle vector b first
-  if col == 1
-    ptr = copy(row_ptr)
-    row_range_col = COSMO.get_rows(b0, row_range)
-    if row_range != nothing
-      for k in row_range_col
-        b_I[k] = ptr
-        ptr += 1
-      end
+  offset = row_ptr - row_range.start
+
+  row_range_col = COSMO.get_rows(b0, row_range)
+  if row_range_col != nothing
+    for k in row_range_col
+      b_I[k] = b0.nzind[k] + offset
     end
-    # also create new set once
-    C_new[set_ind] = C
-    cone_map[set_ind] = k
   end
 
-  # indices which stores the rows in column for C in A0
-  row_range_col = COSMO.get_rows(A0, col, row_range)
-  for k in row_range_col
-    A_I[k] = row_ptr
-    row_ptr += 1
+  # also create new set once
+  C_new[set_ind] = C
+  cone_map[set_ind] = k
+
+  for col = 1:n
+    ptr = copy(row_ptr)
+    # indices which stores the rows in column for C in A0
+    row_range_col = COSMO.get_rows(A0, col, row_range)
+    for k in row_range_col
+      A_I[k] = A0.rowval[k] +offset
+    end
   end
 
-  return row_ptr, overlap_ptr, set_ind + 1, sp_ind
+
+  return row_ptr + C.dim, overlap_ptr, set_ind + 1, sp_ind
 end
 
 function clique_rows_map(row_start::Int64, sntree::SuperNodeTree, C::DecomposableCones{<:Real})
@@ -399,18 +403,19 @@ end
 
 
 function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{COSMO.AbstractConvexSet{Float64}, 1}, row_ptr::Int64, A0::SparseMatrixCSC, b0::SparseVector, row_range::UnitRange{Int64}, overlap_ptr::Int64, set_ind::Int64, sp_ind::Int64,
-  sp_arr::Array{SparsityPattern, 1},  C::DecomposableCones{<: Real}, k::Int64, col::Int64, cone_map::Dict{Int64, Int64})
+  sp_arr::Array{SparsityPattern, 1},  C::DecomposableCones{<: Real}, k::Int64,  cone_map::Dict{Int64, Int64})
 
   sp = sp_arr[sp_ind]
   sntree = sp.sntree
   ordering = sp.ordering
-  nz_ind_map = sp.nz_ind_map
 
   m, n = size(A0)
 
   # determine the row ranges for each of the subblocks
   clique_to_rows = COSMO.clique_rows_map(row_ptr, sntree, C)
+
   # loop over cliques in descending topological order
+
   for iii = num_cliques(sntree):-1:1
 
     sep = map(v -> ordering[v], get_sep(sntree, iii))
@@ -428,23 +433,27 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
       sort!(par_clique)
     end
 
-    row_range_col = COSMO.get_rows(A0, col, row_range)
-    overlap_ptr = add_clique_entries!(A_I, b_I, clique, sep, par_clique, par_rows, col, C, row_ptr, overlap_ptr, row_range_col, nz_ind_map)
-    num_rows = get_blk_rows(get_nBlk(sntree, iii), C)
-
-    if col == 1
-      # create and add new cone for subblock
-      C_new[set_ind] = typeof(C)(num_rows, sp_ind, iii)
-      cone_map[set_ind] = k
+    for col = 1:n
+      row_range_col = COSMO.get_rows(A0, col, row_range)
+      if col == 1
+        row_range_b = COSMO.get_rows(b0, row_range)
+      else
+        row_range_b = 0:0
+      end
+      overlap_ptr = add_clique_entries!(A_I, b_I, A0, b0, clique, sep, par_clique, par_rows, col, C, row_ptr, overlap_ptr, row_range, row_range_col, row_range_b)
     end
 
-    set_ind += 1
+    num_rows = get_blk_rows(get_nBlk(sntree, iii), C)
+    # create and add new cone for subblock
+    cone_map[set_ind] = k
+    C_new[set_ind] = typeof(C)(num_rows, sp_ind, iii)
     row_ptr += num_rows
+    set_ind += 1
   end
   return row_ptr, overlap_ptr, set_ind, sp_ind + 1
 end
 
-function add_clique_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, clique::Array{Int64, 1}, sep::Array{Int64, 1},  par_clique::Array{Int64, 1}, par_rows::UnitRange{Int64}, col::Int64,  C::DecomposableCones{<: Real}, row_ptr::Int64, overlap_ptr::Int64, row_range_col::UnitRange{Int64}, nz_ind_map::SparseVector{Int64, Int64})
+function add_clique_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, A0::SparseMatrixCSC, b0::SparseVector, clique::Array{Int64, 1}, sep::Array{Int64, 1},  par_clique::Array{Int64, 1}, par_rows::UnitRange{Int64}, col::Int64,  C::DecomposableCones{<: Real}, row_ptr::Int64, overlap_ptr::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64}, row_range_b)
   counter = 0
   for j in clique, i in clique
     if i <= j
@@ -455,24 +464,49 @@ function add_clique_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, clique:
           overlap_ptr += 2
         end
       else
-        row_0 = COSMO.get_row_index(i, j, C.sqrt_dim, nz_ind_map, row_range_col, C)
+        # find row where i, j is stored in A
+        k = COSMO.vectorized_ind(i, j, C.sqrt_dim, C)
 
+        row_0 = COSMO.get_row_index(k, A0.rowval, C.sqrt_dim, row_range, row_range_col)
         # row_0 happens when (i, j) references an edge that was added by merging cliques, the corresponding value will be zero
         # and can be disregarded
+        #show(i, j, row_0, row_ptr + counter)
         if row_0 != 0
           A_I[row_0] =  row_ptr + counter
-          # also assemble vector b
-          col == 1 && (b_I[row_0] = row_ptr + counter)
+        end
+
+        if col == 1
+          row_0 = COSMO.get_row_index(k, b0.nzind, C.sqrt_dim, row_range, row_range_b)
+          if row_0 != 0
+            b_I[row_0] = row_ptr + counter
+          end
         end
       end
-      counter += 1
+    counter += 1
     end
   end
   return overlap_ptr
 end
 
-"Given the matrix indices (i, j) and an offset `row_range_col.start`, return the location of the (i, j)th entry in the sparse structure A."
-get_row_index(i::Int64, j::Int64, sqrt_dim::Int64, nz_ind_map::SparseVector{Int64, Int64}, row_range_col::UnitRange{Int64}, C::DecomposableCones{<: Real}) = row_range_col.start + nz_ind_map[COSMO.vectorized_ind(i, j, C.sqrt_dim, C)] - 1
+
+"Given the svec index `k` and an offset `row_range_col.start`, return the location of the (i, j)th entry in the sparse structure A."
+function get_row_index(k::Int64, rowval::Array{Int64}, sqrt_dim::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64})
+
+  k_shift = row_range.start + k - 1
+
+  # determine upper set boundary of where the row could be
+  u = min(row_range_col.stop, row_range_col.start + k_shift - 1)
+
+  # find index of first entry >= k, starting in the interval [l, u]
+  # if no, entry is >= k, returns u + 1
+  r = searchsortedfirst(rowval, k_shift, row_range_col.start, u, Base.Order.Forward)
+  # if no r s.t. rowval[r] = k_shift was found that means that the (i, j)th entry represents an edded edge (zero) from clique merging
+  if r > u || rowval[r] != k_shift
+    return 0
+  else
+    return r
+  end
+end
 
 function alternating_sequence(total_length::Int64, n_start::Int64)
   v = ones(Float64, total_length)
@@ -492,6 +526,17 @@ function extra_columns(total_length::Int64, n_start::Int64, start_val::Int64)
   return v
 end
 
+function findnz!(I::Vector{Ti}, J::Vector{Ti}, V::Vector{Tv}, S::SparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
+    numnz = nnz(S)
+    count = 1
+    @inbounds for col = 1 : S.n, k = S.colptr[col] : (S.colptr[col+1]-1)
+       # I[count] = S.rowval[k]
+        J[count] = col
+        V[count] = S.nzval[k]
+        count += 1
+    end
+end
+
 function augment_clique_based!(ws)
   A = ws.p.A
   b = ws.p.b
@@ -502,42 +547,37 @@ function augment_clique_based!(ws)
 
 
   mA, nA, num_overlapping_entries = find_A_dimension(ws.p.model_size[2], ws.p.C.sets, ws.ci.sp_arr)
-  #@show(mA, nA)
+
   # find number of decomposed and total sets and allocate structure for new compositve convex set
   num_total, num_new_psd_cones = COSMO.num_cone_decomposition(ws)
 
-
   C_new = Array{COSMO.AbstractConvexSet{Float64}}(undef, num_total - 1)
 
-  A_I, A_J, A_V = findnz(A)
-  nz = length(A_I)
-
+  nz = nnz(A)
   Aa_I = zeros(Int64, nz + 2 * num_overlapping_entries)
-  @. Aa_I[1:nz] = A_I
   Aa_J = extra_columns(nz + 2 * num_overlapping_entries, nz + 1, ws.p.model_size[2] + 1)
-  @. Aa_J[1:nz] = A_J
   Aa_V =  alternating_sequence(nz + 2 * num_overlapping_entries, nz + 1)
-  @. Aa_V[1:nz] = A_V
+  findnz!(Aa_I, Aa_J, Aa_V, A)
 
   row_ranges = COSMO.get_set_indices(cones) # the row ranges of each cone in the original problem
   row_ptr = 1 # a continuously updated pointer to the start of the first entry of a cone in A_I
   overlap_ptr = nz + 1 # a continuously updated pointer to the next free entry to enter the rows for the +1, -1 overlap entries
 
   bs = sparse(b)
-  b_I = bs.nzind
+  b_I = zeros(Int64, length(bs.nzval))
   b_V = bs.nzval
-  for col = 1:ws.p.model_size[2]
-    sp_ind = 1
-    set_ind = 1
-    for (k, C) in enumerate(cones)
-      row_range = row_ranges[k]
-      row_ptr, overlap_ptr, set_ind, sp_ind,  = COSMO.add_entries!(Aa_I, b_I, C_new, row_ptr, A, bs, row_range, overlap_ptr, set_ind, sp_ind, sp_arr, C, k, col, ws.ci.cone_map)
-    end
+  sp_ind = 1
+  set_ind = 1
+
+  for (k, C) in enumerate(cones)
+    row_range = row_ranges[k]
+    row_ptr, overlap_ptr, set_ind, sp_ind = COSMO.add_entries!(Aa_I, b_I, C_new, row_ptr, A, bs, row_range, overlap_ptr, set_ind, sp_ind, sp_arr, C, k, ws.ci.cone_map)
   end
 
+
   Aa = sparse(Aa_I, Aa_J, Aa_V, mA, nA)
-  dropzeros!(Aa)
   ba = Vector(SparseArrays._sparsevector!(b_I, b_V, mA))
+  #ba = Vector(sparsevec(b_I, b_V, mA))
 
   ws.p.P = blockdiag(P, spzeros(num_overlapping_entries, num_overlapping_entries))
   ws.p.q = vec([q; zeros(num_overlapping_entries)])
@@ -601,8 +641,6 @@ function reverse_decomposition!(ws::COSMO.Workspace, settings::COSMO.Settings)
 
   vars = Variables{Float64}(mO, nO, ws.ci.originalC)
   vars.x .= ws.vars.x[1:nO]
-
-  #@show(ws.vars.s)
 
   if settings.colo_transformation
     # reassemble the original variables s and μ

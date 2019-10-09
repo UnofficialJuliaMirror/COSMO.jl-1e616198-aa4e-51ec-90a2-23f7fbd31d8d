@@ -191,6 +191,16 @@ mutable struct SparsityPattern
     # necessary for equal column structure for psd completion
     reorder_snd_consecutively!(sntree, ordering)
 
+    # undo the reordering and sort
+    # for iii = 1:sntree.num
+    #   sep = get_sep(sntree, iii)
+    #   snd = get_snd(sntree, iii)
+    #   map!(v -> ordering[v], sep)
+    #   map!(v -> ordering[v], snd)
+    #   sort!(sep)
+    #   sort!(snd)
+    # end
+
     # for each clique determine the number of entries of the block represented by that clique
     calculate_block_dimensions!(sntree)#, merge_strategy)
 
