@@ -372,7 +372,7 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
     # indices which stores the rows in column for C in A0
     row_range_col = COSMO.get_rows(A0, col, row_range)
     for k in row_range_col
-      A_I[k] = A0.rowval[k] +offset
+      A_I[k] = A0.rowval[k] + offset
     end
   end
 
@@ -399,11 +399,48 @@ function parent_block_indices(par_clique::Array{Int64, 1}, i::Int64, j::Int64)
   return COSMO.mat_to_svec_ind(ir, jr)
 end
 
+"""
+    get_block_indices(snd::Array{Int64}, sep::Array{Int64})
+
+For a clique consisting of supernodes `snd` and seperators `sep`, compute all the indices (i, j) of the corresponding matrix block
+in the format (i, j, flag) where flag is equal to 0 if entry (i, j) corresponds to an overlap of the clique and 1 otherwise.
+"""
+function get_block_indices(snd::Array{Int64}, sep::Array{Int64})
+  N = length(sep) + length(snd)
+  d = div(N * (N + 1), 2)
+
+  block_indices = Array{Tuple{Int64, Int64, Int64}, 1}(undef, d)
+  ind = 1
+
+  for j in sep, i in sep
+    if i <= j
+      block_indices[ind] = (i, j, 0)
+      ind += 1
+    end
+  end
+
+  for j in snd, i in snd
+    if i <= j
+      block_indices[ind] = (i, j, 1)
+      ind += 1
+    end
+  end
+
+  for i in snd
+    for j in sep
+      block_indices[ind] = (min(i, j), max(i, j), 1)
+      ind += 1
+    end
+  end
+
+  sort!(block_indices, by = x -> x[2] * N + x[1] )
+  return block_indices
+end
 
 
 
 function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{COSMO.AbstractConvexSet{Float64}, 1}, row_ptr::Int64, A0::SparseMatrixCSC, b0::SparseVector, row_range::UnitRange{Int64}, overlap_ptr::Int64, set_ind::Int64, sp_ind::Int64,
-  sp_arr::Array{SparsityPattern, 1},  C::DecomposableCones{<: Real}, k::Int64,  cone_map::Dict{Int64, Int64})
+  sp_arr::Array{SparsityPattern, 1},  C::PsdConeTriangle{Float64}, k::Int64,  cone_map::Dict{Int64, Int64})
 
   sp = sp_arr[sp_ind]
   sntree = sp.sntree
@@ -415,13 +452,14 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
   clique_to_rows = COSMO.clique_rows_map(row_ptr, sntree, C)
 
   # loop over cliques in descending topological order
-
   for iii = num_cliques(sntree):-1:1
 
+    # get supernodes and seperators and undo the reodering
     sep = map(v -> ordering[v], get_sep(sntree, iii))
     isa(sep, Array{Any, 1}) && (sep = Int64[])
-    clique = map(v -> ordering[v], get_clique(sntree, iii))
-    sort!(clique)
+    snd = map(v -> ordering[v], get_snd(sntree, iii))
+    # compute block indices for this clique with information wether an entry (i, j) is an overlap
+    block_indices = COSMO.get_block_indices(snd, sep)
 
     if iii == num_cliques(sntree)
       par_clique = Int64[]
@@ -435,16 +473,12 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
 
     for col = 1:n
       row_range_col = COSMO.get_rows(A0, col, row_range)
-      if col == 1
-        row_range_b = COSMO.get_rows(b0, row_range)
-      else
-        row_range_b = 0:0
-      end
-      overlap_ptr = add_clique_entries!(A_I, b_I, A0, b0, clique, sep, par_clique, par_rows, col, C, row_ptr, overlap_ptr, row_range, row_range_col, row_range_b)
+      row_range_b = col == 1 ? COSMO.get_rows(b0, row_range) : 0:0
+      overlap_ptr = add_clique_entries!(A_I, b_I, A0.rowval, b0.nzind, block_indices, par_clique, par_rows, col, C.sqrt_dim, row_ptr, overlap_ptr, row_range, row_range_col, row_range_b)
     end
 
-    num_rows = get_blk_rows(get_nBlk(sntree, iii), C)
     # create and add new cone for subblock
+    num_rows = get_blk_rows(get_nBlk(sntree, iii), C)
     cone_map[set_ind] = k
     C_new[set_ind] = typeof(C)(num_rows, sp_ind, iii)
     row_ptr += num_rows
@@ -453,44 +487,62 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
   return row_ptr, overlap_ptr, set_ind, sp_ind + 1
 end
 
-function add_clique_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, A0::SparseMatrixCSC, b0::SparseVector, clique::Array{Int64, 1}, sep::Array{Int64, 1},  par_clique::Array{Int64, 1}, par_rows::UnitRange{Int64}, col::Int64,  C::DecomposableCones{<: Real}, row_ptr::Int64, overlap_ptr::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64}, row_range_b)
+" Loop over all blocks in the clique and either set the correct row in `A_I` and `b_I` if (i, j) is not an overlap or add an overlap column with (-1 and +1) in the correct positions."
+function add_clique_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, A_rowval::Array{Int64}, b_nzind::Array{Int64, 1}, block_indices::Array{Tuple{Int64, Int64, Int64},1},  par_clique::Array{Int64, 1}, par_rows::UnitRange{Int64}, col::Int64,  C_sqrt_dim::Int64, row_ptr::Int64, overlap_ptr::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64}, row_range_b::UnitRange{Int64})
   counter = 0
-  for j in clique, i in clique
-    if i <= j
-      if i ∈ sep && j ∈ sep
-        if col == 1
-          A_I[overlap_ptr] = row_ptr + counter # this creates the +1 entry
-          A_I[overlap_ptr + 1] = par_rows.start + COSMO.parent_block_indices(par_clique, i, j) - 1 # this creates the -1 entry
-          overlap_ptr += 2
-        end
-      else
-        # find row where i, j is stored in A
-        k = COSMO.vectorized_ind(i, j, C.sqrt_dim, C)
-
-        row_0 = COSMO.get_row_index(k, A0.rowval, C.sqrt_dim, row_range, row_range_col)
-        # row_0 happens when (i, j) references an edge that was added by merging cliques, the corresponding value will be zero
-        # and can be disregarded
-        #show(i, j, row_0, row_ptr + counter)
-        if row_0 != 0
-          A_I[row_0] =  row_ptr + counter
-        end
-
-        if col == 1
-          row_0 = COSMO.get_row_index(k, b0.nzind, C.sqrt_dim, row_range, row_range_b)
-          if row_0 != 0
-            b_I[row_0] = row_ptr + counter
-          end
-        end
+  for block_idx in block_indices
+    new_row_val = row_ptr + counter
+    # a block index that corresponds to an overlap
+    if block_idx[3] == 0
+      if col == 1
+        i = block_idx[1]
+        j = block_idx[2]
+        A_I[overlap_ptr] = new_row_val # this creates the +1 entry
+        A_I[overlap_ptr + 1] = par_rows.start + COSMO.parent_block_indices(par_clique, i, j) - 1 # this creates the -1 entry
+        overlap_ptr += 2
       end
-    counter += 1
+    else
+      i = block_idx[1]
+      j = block_idx[2]
+      k = COSMO.mat_to_svec_ind(i, j)
+      add_clique_rows!(A_I, k, A_rowval, C_sqrt_dim, new_row_val, row_range, row_range_col)
+      col == 1 && add_clique_rows_b!(b_I, k, b_nzind, C_sqrt_dim, new_row_val, row_range, row_range_b)
     end
+  counter += 1
   end
   return overlap_ptr
 end
 
+function add_clique_rows!(A_I::Array{Int64, 1}, k::Int64, A_rowval::Array{Int64, 1}, C_sqrt_dim::Int64, new_row_val::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64})
+
+  row_0 = COSMO.get_row_index(k, A_rowval, C_sqrt_dim, row_range, row_range_col)
+  # row_0 happens when (i, j) references an edge that was added by merging cliques, the corresponding value will be zero
+  # and can be disregarded
+  #show(i, j, row_0, row_ptr + counter)
+  if row_0 != 0
+    A_I[row_0] =  new_row_val
+  end
+  return nothing
+end
+
+function add_clique_rows_b!(b_I::Array{Int64, 1}, k::Int64, b_nzind::Array{Int64, 1}, C_sqrt_dim::Int64, new_row_val::Int64, row_range::UnitRange{Int64}, row_range_b::UnitRange{Int64} )
+  row_0 = COSMO.get_row_index(k, b_nzind, C_sqrt_dim, row_range, row_range_b)
+  if row_0 != 0
+    b_I[row_0] = new_row_val
+  end
+  return nothing
+end
+
+# function add_overlap_rows!()
+
+# end
+
+# function add_overlap_rows_b!()
+
+# end
 
 "Given the svec index `k` and an offset `row_range_col.start`, return the location of the (i, j)th entry in the sparse structure A."
-function get_row_index(k::Int64, rowval::Array{Int64}, sqrt_dim::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64})
+function get_row_index(k::Int64, rowval::Array{Int64, 1}, sqrt_dim::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64})
 
   k_shift = row_range.start + k - 1
 
