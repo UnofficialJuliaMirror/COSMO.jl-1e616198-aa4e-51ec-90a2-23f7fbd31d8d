@@ -404,8 +404,10 @@ end
 
 For a clique consisting of supernodes `snd` and seperators `sep`, compute all the indices (i, j) of the corresponding matrix block
 in the format (i, j, flag) where flag is equal to 0 if entry (i, j) corresponds to an overlap of the clique and 1 otherwise.
+
+`Nv` is the number of vertices in the graph that we are trying to decompose.
 """
-function get_block_indices(snd::Array{Int64}, sep::Array{Int64})
+function get_block_indices(snd::Array{Int64}, sep::Array{Int64}, Nv::Int64)
   N = length(sep) + length(snd)
   d = div(N * (N + 1), 2)
 
@@ -433,7 +435,7 @@ function get_block_indices(snd::Array{Int64}, sep::Array{Int64})
     end
   end
 
-  sort!(block_indices, by = x -> x[2] * N + x[1] )
+  sort!(block_indices, by = x -> x[2] * Nv + x[1] )
   return block_indices
 end
 
@@ -445,7 +447,7 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
   sp = sp_arr[sp_ind]
   sntree = sp.sntree
   ordering = sp.ordering
-
+  N_v = length(ordering)
   m, n = size(A0)
 
   # determine the row ranges for each of the subblocks
@@ -459,7 +461,7 @@ function add_entries!(A_I::Array{Int64, 1}, b_I::Array{Int64, 1}, C_new::Array{C
     isa(sep, Array{Any, 1}) && (sep = Int64[])
     snd = map(v -> ordering[v], get_snd(sntree, iii))
     # compute block indices for this clique with information wether an entry (i, j) is an overlap
-    block_indices = COSMO.get_block_indices(snd, sep)
+    block_indices = COSMO.get_block_indices(snd, sep, N_v)
 
     if iii == num_cliques(sntree)
       par_clique = Int64[]
@@ -518,28 +520,16 @@ function add_clique_rows!(A_I::Array{Int64, 1}, k::Int64, A_rowval::Array{Int64,
   row_0 = COSMO.get_row_index(k, A_rowval, C_sqrt_dim, row_range, row_range_col)
   # row_0 happens when (i, j) references an edge that was added by merging cliques, the corresponding value will be zero
   # and can be disregarded
-  #show(i, j, row_0, row_ptr + counter)
-  if row_0 != 0
-    A_I[row_0] =  new_row_val
-  end
+  row_0 != 0 && A_I[row_0] =  new_row_val
   return nothing
 end
 
 function add_clique_rows_b!(b_I::Array{Int64, 1}, k::Int64, b_nzind::Array{Int64, 1}, C_sqrt_dim::Int64, new_row_val::Int64, row_range::UnitRange{Int64}, row_range_b::UnitRange{Int64} )
   row_0 = COSMO.get_row_index(k, b_nzind, C_sqrt_dim, row_range, row_range_b)
-  if row_0 != 0
-    b_I[row_0] = new_row_val
-  end
+  row_0 != 0 && b_I[row_0] = new_row_val
   return nothing
 end
 
-# function add_overlap_rows!()
-
-# end
-
-# function add_overlap_rows_b!()
-
-# end
 
 "Given the svec index `k` and an offset `row_range_col.start`, return the location of the (i, j)th entry in the sparse structure A."
 function get_row_index(k::Int64, rowval::Array{Int64, 1}, sqrt_dim::Int64, row_range::UnitRange{Int64}, row_range_col::UnitRange{Int64})
