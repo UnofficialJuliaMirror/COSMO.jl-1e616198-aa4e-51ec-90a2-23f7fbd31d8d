@@ -520,13 +520,15 @@ function add_clique_rows!(A_I::Array{Int64, 1}, k::Int64, A_rowval::Array{Int64,
   row_0 = COSMO.get_row_index(k, A_rowval, C_sqrt_dim, row_range, row_range_col)
   # row_0 happens when (i, j) references an edge that was added by merging cliques, the corresponding value will be zero
   # and can be disregarded
-  row_0 != 0 && A_I[row_0] =  new_row_val
+  if row_0 != 0
+    A_I[row_0] = new_row_val
+  end
   return nothing
 end
 
 function add_clique_rows_b!(b_I::Array{Int64, 1}, k::Int64, b_nzind::Array{Int64, 1}, C_sqrt_dim::Int64, new_row_val::Int64, row_range::UnitRange{Int64}, row_range_b::UnitRange{Int64} )
   row_0 = COSMO.get_row_index(k, b_nzind, C_sqrt_dim, row_range, row_range_b)
-  row_0 != 0 && b_I[row_0] = new_row_val
+  row_0 != 0 && (b_I[row_0] = new_row_val)
   return nothing
 end
 
@@ -568,6 +570,17 @@ function extra_columns(total_length::Int64, n_start::Int64, start_val::Int64)
   return v
 end
 
+function augmented_col_ptr(colptr::Array{Int64}, num_overlapping_entries::Int64)
+  l = length(colptr)
+  v = zeros(Int64, l + num_overlapping_entries)
+  col = colptr[end] + 2
+  for i = l+1:length(v)
+    v[i] = col
+    col += 2
+  end
+  return v
+end
+
 function findnz!(I::Vector{Ti}, J::Vector{Ti}, V::Vector{Tv}, S::SparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
     numnz = nnz(S)
     count = 1
@@ -579,7 +592,31 @@ function findnz!(I::Vector{Ti}, J::Vector{Ti}, V::Vector{Tv}, S::SparseMatrixCSC
     end
 end
 
-function augment_clique_based!(ws)
+function add_nz_entries!(J::Vector{Ti}, V::Vector{Tv}, S::SparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
+  for i = 1:length(S.colptr)
+    J[i] = S.colptr[i]
+  end
+  for i = 1:length(S.nzval)
+    V[i] = S.nzval[i]
+  end
+  return nothing
+end
+
+function sort_col_wise!(rowval::Array{Int64, 1}, nzval::Array{Float64, 1}, colptr::Array{Int64, 1}, n0::Int64)
+  for col = 1:n0
+    r = colptr[col]:colptr[col + 1]-1
+    row_view = view(rowval, r)
+    nzval_view = view(nzval, r)
+    p = sortperm(row_view)
+    if !issorted(p)
+      permute!(row_view, p)
+      permute!(nzval_view, p)
+    end
+  end
+  return nothing
+end
+
+function augment_clique_based!(ws::COSMO.Workspace{T}) where {T}
   A = ws.p.A
   b = ws.p.b
   q = ws.p.q
@@ -597,9 +634,12 @@ function augment_clique_based!(ws)
 
   nz = nnz(A)
   Aa_I = zeros(Int64, nz + 2 * num_overlapping_entries)
+  #Aa_J = augmented_col_ptr(A.colptr, num_overlapping_entries)
   Aa_J = extra_columns(nz + 2 * num_overlapping_entries, nz + 1, ws.p.model_size[2] + 1)
+
   Aa_V =  alternating_sequence(nz + 2 * num_overlapping_entries, nz + 1)
   findnz!(Aa_I, Aa_J, Aa_V, A)
+  #add_nz_entries!(Aa_J, Aa_V, A)
 
   row_ranges = COSMO.get_set_indices(cones) # the row ranges of each cone in the original problem
   row_ptr = 1 # a continuously updated pointer to the start of the first entry of a cone in A_I
@@ -616,20 +656,28 @@ function augment_clique_based!(ws)
     row_ptr, overlap_ptr, set_ind, sp_ind = COSMO.add_entries!(Aa_I, b_I, C_new, row_ptr, A, bs, row_range, overlap_ptr, set_ind, sp_ind, sp_arr, C, k, ws.ci.cone_map)
   end
 
-
-  Aa = sparse(Aa_I, Aa_J, Aa_V, mA, nA)
   ba = Vector(SparseArrays._sparsevector!(b_I, b_V, mA))
-  #ba = Vector(sparsevec(b_I, b_V, mA))
 
+  ws.p.A = allocate_sparse_matrix(Aa_I, Aa_J, Aa_V, mA, nA)
   ws.p.P = blockdiag(P, spzeros(num_overlapping_entries, num_overlapping_entries))
   ws.p.q = vec([q; zeros(num_overlapping_entries)])
-  ws.p.A = Aa
   ws.p.b = ba
   ws.p.model_size[1] = size(ws.p.A, 1)
   ws.p.model_size[2] = size(ws.p.A, 2)
   ws.p.C = COSMO.CompositeConvexSet(C_new)
 
   return nothing
+end
+
+function allocate_sparse_matrix(Aa_I::Array{Int64, 1}, Aa_J::Array{Int64, 1}, Aa_V::Array{Float64, 1}, mA::Int64, nA::Int64)
+  csrrowptr = zeros(Int64, mA + 1)
+  csrcolval = zeros(Int64, length(Aa_I))
+  csrnzval = zeros(Float64, length(Aa_I))
+  klasttouch = zeros(Int64, nA + 1)
+  csccolptr = zeros(Int64, nA + 1)
+  # sort_col_wise!(Aa_I, Aa_V, A.colptr, size(A, 2))
+  #Aa = SparseMatrixCSC{Float64, Int64}(mA, nA, Aa_J, Aa_I, Aa_V)
+  Aa = SparseArrays.sparse!(Aa_I, Aa_J, Aa_V, mA, nA, +, klasttouch, csrrowptr, csrcolval, csrnzval, csccolptr, Aa_I, Aa_V )
 end
 
 function add_sub_blocks!(s::SplitVector, s_decomp::SplitVector, μ::AbstractVector, μ_decomp::AbstractVector, ci::ChordalInfo, C::CompositeConvexSet, C0::CompositeConvexSet, cone_map::Dict{Int64, Int64})
